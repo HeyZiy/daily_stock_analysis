@@ -1126,48 +1126,7 @@ class Config:
             _logger.warning("LITELLM_CONFIG: model_list must be a list")
             return []
 
-    def log_diagnostics(self):
-        """打印脱敏的配置诊断信息，用于排查环境变量是否加载成功"""
-        import logging
-        _logger = logging.getLogger("config_diag")
         _logger.info("-" * 40)
-        _logger.info("系统配置诊断面板:")
-        
-        # 1. 智能选股
-        screen_status = "✅ 已就绪" if self.mx_apikey and self.smart_screen_keyword else "⚪ 未完整配置"
-        _logger.info(f"  [智能选股] 状态: {screen_status}")
-        _logger.info(f"    - MX_APIKEY: {'已配置 (***' + self.mx_apikey[-4:] + ')' if self.mx_apikey else '缺失'}")
-        _logger.info(f"    - 选股条件 : {self.smart_screen_keyword or '缺失'}")
-        
-        # 2. AI 模型
-        ai_status = "✅ 已配置" if self.litellm_model or self.gemini_api_key else "❌ 缺失模型配置"
-        _logger.info(f"  [AI 分析 ] 状态: {ai_status}")
-        _logger.info(f"    - 主模型   : {self.litellm_model or self.gemini_model}")
-        
-        # 3. 股票池
-        _logger.info(f"  [基础池   ] 数量: {len(self.stock_list)} 只")
-        
-        # 4. 通知渠道
-        notifiers = []
-        if self.feishu_webhook_url: notifiers.append("飞书")
-        if self.wechat_webhook_url: notifiers.append("企微")
-        if self.telegram_bot_token: notifiers.append("Telegram")
-        if self.email_sender: notifiers.append("邮件")
-        _logger.info(f"  [通知渠道 ] 激活: {', '.join(notifiers) if notifiers else '仅控制台'}")
-        
-        _logger.info("-" * 40)
-
-        # Resolve os.environ/ references in string params
-        for entry in model_list:
-            params = entry.get('litellm_params', {})
-            for key in list(params.keys()):
-                val = params.get(key)
-                if isinstance(val, str) and val.startswith('os.environ/'):
-                    env_name = val.split('/', 1)[1]
-                    params[key] = os.getenv(env_name, '')
-
-        _logger.info(f"LITELLM_CONFIG: loaded {len(model_list)} model deployment(s) from {path}")
-        return model_list
 
     @classmethod
     def _parse_llm_channels(cls, channels_str: str) -> List[Dict[str, Any]]:
