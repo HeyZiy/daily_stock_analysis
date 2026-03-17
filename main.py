@@ -46,7 +46,7 @@ from typing import List, Optional, Tuple
 from data_provider.base import canonical_stock_code
 from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
-from src.services.pool_manager import DynamicPoolManager
+
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
@@ -319,17 +319,13 @@ def run_full_analysis(
             save_context_snapshot=save_context_snapshot
         )
 
-        # 0. 预获取数据并维护流动池
-        pool_manager = DynamicPoolManager()
+        # 0. 预获取数据
         if not args.dry_run:
-            logger.info("正在预获取行情数据以维护流动池状态...")
+            logger.info("正在预获取行情数据...")
             pipeline.run(stock_codes=stock_codes, dry_run=True, send_notification=False)
-            
-            # 维护流动池（清理过期、跌破MA10）
-            pool_manager.maintain_pool()
         
-        # 1. 评估梯队
-        tier_mapping = pool_manager.evaluate_tiers()
+        # 1. 简化版本：空梯队映射
+        tier_mapping = {}
         
         # 2. 运行个股分析 (使用评估出的梯队信息)
         results = pipeline.run(
@@ -562,7 +558,7 @@ def main() -> int:
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
 
     # === 处理智能选股 (--smart-screen) ===
-    pool_manager = DynamicPoolManager()
+    screened_codes = []
     screen_keyword = args.smart_screen
     if screen_keyword == '__USE_CONFIG__':
         screen_keyword = config.smart_screen_keyword
@@ -587,21 +583,18 @@ def main() -> int:
             
             if screened_codes:
                 logger.info(f"智能选股完成 (条件: {screen_keyword})，找到 {len(screened_codes)} 只股票: {screened_codes}")
-                # 存入流动池
-                pool_manager.add_to_pool(screened_codes)
             else:
                 logger.warning(f"智能选股 (条件: {screen_keyword}) 未找到匹配股票（API 返回为空或解析失败）")
 
-    # === 合并股票池 (静态配置 + 流动池) ===
+    # === 合并股票池 (静态配置 + 智能选股结果) ===
     if not args.stocks:
-        # 如果用户未显式指定股票，则自动包含“自选股列表”和“流动池”
+        # 如果用户未显式指定股票，则自动包含“自选股列表”和“智能选股结果”
         base_pool = config.stock_list or []
-        active_pool = pool_manager.get_active_pool()
-        if active_pool:
-            logger.info(f"从流动池加载了 {len(active_pool)} 只活跃股票: {active_pool}")
+        if screened_codes:
+            logger.info(f"智能选股结果: {screened_codes}")
         
         # 合并去重
-        stock_codes = list(dict.fromkeys(base_pool + active_pool))
+        stock_codes = list(dict.fromkeys(base_pool + screened_codes))
         logger.info(f"分析股票池合并完成，共 {len(stock_codes)} 只: {stock_codes}")
     else:
         # 用户命令行显式指定了股票，则仅分析指定的
