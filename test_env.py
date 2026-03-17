@@ -81,6 +81,11 @@ def test_config():
     print(f"  Gemini 主模型: {config.gemini_model}")
     print(f"  Gemini 备选模型: {config.gemini_model_fallback}")
     
+    print(f"  MX API Key (妙想): {'已配置 ✓' if config.mx_apikey else '未配置 ✗'}")
+    if config.mx_apikey:
+        print(f"    Key 前8位: {config.mx_apikey[:8]}...")
+    print(f"  智能选股条件: {config.smart_screen_keyword or '未配置'}")
+    
     print(f"  企业微信 Webhook: {'已配置 ✓' if config.wechat_webhook_url else '未配置 ✗'}")
     
     print_section("配置验证")

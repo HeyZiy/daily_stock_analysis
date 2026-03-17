@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - 🐛 **港股 Agent 实时行情去重与快速路由** — 统一 `HK01810` / `1810.HK` / `01810` 等港股代码归一规则；港股实时行情改为直接走单次 `akshare_hk` 路径，避免按 A 股 source priority 重复触发同一失败接口；Agent 运行期对显式 `retriable=false` 的工具失败增加短路缓存，减少同轮分析中的重复失败调用。
 
+### 新功能
+
+- 🔍 **自然语言智能选股** — 新增 `--smart-screen` (或 `-s`) 命令行参数，支持通过自然语言指令（如“今日涨幅2%且市盈率小于20的股票”）调用妙想选股 API；选股结果可与现有 `STOCK_LIST` 静态池合并，实现“选股+分析”的一站式工作流。支持在 `.env` 中配置 `MX_APIKEY`。
+
 ## [3.7.0] - 2026-03-15
 
 ### 新功能

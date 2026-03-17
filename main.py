@@ -210,6 +210,14 @@ def parse_arguments() -> argparse.Namespace:
         help='强制回测（即使已有回测结果也重新计算）'
     )
 
+    parser.add_argument(
+        '--smart-screen', '-s',
+        type=str,
+        nargs='?',
+        const='__USE_CONFIG__',
+        help='使用自然语言进行智能选股，结果将与现有股票池合并分析 (不填则使用环境变量 SMART_SCREEN_KEYWORD)'
+    )
+
     return parser.parse_args()
 
 
@@ -532,12 +540,49 @@ def main() -> int:
     warnings = config.validate()
     for warning in warnings:
         logger.warning(warning)
-
+    
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
     if args.stocks:
         stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
+
+    # === 处理智能选股 (--smart-screen) ===
+    screen_keyword = args.smart_screen
+    if screen_keyword == '__USE_CONFIG__':
+        screen_keyword = config.smart_screen_keywrd
+    elif not screen_keyword and config.smart_screen_keyword:
+        if not args.stocks:
+             screen_keyword = config.smart_screen_keyword
+
+    if screen_keyword:
+        if not config.mx_apikey:
+            env_val = os.getenv('MX_APIKEY')
+            logger.error(f"未配置 MX_APIKEY，智能选股功能不可用 (环境变量检测: {bool(env_val)})")
+            # 如果是命令行显式指定的选股，则报错退出
+            if args.smart_screen and args.smart_screen != '__USE_CONFIG__':
+                return 1
+            else:
+                screen_keyword = None
+                
+        if screen_keyword:
+            from src.services.stock_screen_service import StockScreenService
+            screen_service = StockScreenService(config.mx_apikey)
+            screened_codes = screen_service.get_screened_codes(screen_keyword)
+            
+            if screened_codes:
+                logger.info(f"智能选股完成 (条件: {screen_keyword})，找到 {len(screened_codes)} 只股票: {screened_codes}")
+                # 合并去重逻辑
+                base_pool = stock_codes if stock_codes else config.stock_list
+                if not base_pool:
+                    # 如果原本配置是空的（虽然通常不会），确保至少能用选股结果
+                    stock_codes = screened_codes
+                else:
+                    merged_pool = list(dict.fromkeys(base_pool + screened_codes))
+                    stock_codes = merged_pool
+                logger.info(f"合并后股票池共 {len(stock_codes)} 只: {stock_codes}")
+            else:
+                logger.warning(f"智能选股 (条件: {screen_keyword}) 未找到匹配股票（API 返回为空或解析失败），将使用原股票池")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:

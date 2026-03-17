@@ -265,6 +265,8 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    mx_apikey: Optional[str] = None
+    smart_screen_keyword: Optional[str] = None
     
     # === AI 分析配置 ===
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-2.5-flash)
@@ -793,7 +795,18 @@ class Config:
                 if m not in _seen and not _seen.add(m)  # type: ignore[func-returns-value]
             ]
 
-        # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
+        # 解析搜索引擎 API Keys
+        # 记录调试信息 (不输出 key 本身)
+        raw_mx = os.getenv('MX_APIKEY')
+        raw_mx_alt = os.getenv('MX_API_KEY')
+        
+        mx_apikey = (raw_mx or raw_mx_alt or '').strip() or None
+        smart_screen_keyword = (
+            os.getenv('SMART_SCREEN_KEYWORD') or 
+            os.getenv('SMART_SCREEN_CONDITION') or 
+            ''
+        ).strip() or None
+
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
@@ -1045,7 +1058,9 @@ class Config:
                 os.getenv('PORTFOLIO_RISK_STOP_LOSS_NEAR_RATIO', '0.8')
             ),
             portfolio_risk_lookback_days=int(os.getenv('PORTFOLIO_RISK_LOOKBACK_DAYS', '180')),
-            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true'
+            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
+            mx_apikey=mx_apikey,
+            smart_screen_keyword=smart_screen_keyword
         )
     
     @classmethod

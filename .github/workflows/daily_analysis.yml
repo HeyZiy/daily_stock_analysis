@@ -91,6 +91,12 @@ jobs:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           
           # ==========================================
+          # 智能选股 (妙想) ⬅️ 新增！
+          # ==========================================
+          MX_APIKEY: ${{ secrets.MX_APIKEY || secrets.MX_API_KEY || vars.MX_APIKEY || vars.MX_API_KEY }}
+          SMART_SCREEN_KEYWORD: ${{ vars.SMART_SCREEN_KEYWORD || secrets.SMART_SCREEN_KEYWORD || vars.SMART_SCREEN_CONDITION || secrets.SMART_SCREEN_CONDITION }}
+          
+          # ==========================================
           # 搜索服务
           # ==========================================
           BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
@@ -208,6 +214,11 @@ jobs:
           echo "  AIHubMix Key:   $([ -n "$AIHUBMIX_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  OpenAI API Key: $([ -n "$OPENAI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Anthropic Key:  $([ -n "$ANTHROPIC_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo ""
+          echo "【数据源 & 选股】"
+          echo "  Tushare Token:  $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  MX API Key:     $([ -n "$MX_APIKEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  智能选股条件:   $([ -n "$SMART_SCREEN_KEYWORD" ] && echo "✅ [$SMART_SCREEN_KEYWORD]" || echo '⚪ 未配置')"
           echo ""
           echo "【搜索引擎】"
           echo "  Bocha API Keys: $([ -n "$BOCHA_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
