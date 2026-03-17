@@ -545,6 +545,9 @@ def main() -> int:
     # 配置日志（输出到控制台和文件）
     setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
 
+    # 打印配置诊断信息
+    config.log_diagnostics()
+
     logger.info("=" * 60)
     logger.info("A股自选股智能分析系统 启动")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -569,6 +572,9 @@ def main() -> int:
     elif not screen_keyword and config.smart_screen_keyword:
         if not args.stocks:
              screen_keyword = config.smart_screen_keyword
+    
+    if not screen_keyword:
+        logger.info("未通过命令行或配置文件指定智能选股关键词，跳过选股阶段")
 
     if screen_keyword:
         if not config.mx_apikey:
@@ -576,8 +582,10 @@ def main() -> int:
             logger.error(f"未配置 MX_APIKEY，智能选股功能不可用 (环境变量检测: {bool(env_val)})")
             # 如果是命令行显式指定的选股，则报错退出
             if args.smart_screen and args.smart_screen != '__USE_CONFIG__':
+                logger.error("由于缺少 MX_APIKEY，无法执行命令行指定的智能选股")
                 return 1
             else:
+                logger.info("未配置 MX_APIKEY，自动跳过定时智能选股")
                 screen_keyword = None
                 
         if screen_keyword:
