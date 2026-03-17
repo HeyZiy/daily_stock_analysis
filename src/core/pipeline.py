@@ -161,7 +161,7 @@ class StockAnalysisPipeline:
             logger.error(f"{stock_name}({code}) {error_msg}")
             return False, error_msg
     
-    def analyze_stock(self, code: str, report_type: ReportType, query_id: str) -> Optional[AnalysisResult]:
+    def analyze_stock(self, code: str, report_type: ReportType, query_id: str, tier_info: int = 0) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
         
@@ -282,10 +282,9 @@ class StockAnalysisPipeline:
                     report_type,
                     query_id,
                     stock_name,
-                    realtime_quote,
-                    chip_data,
                     fundamental_context,
                     trend_result,
+                    tier_info=tier_info,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -349,6 +348,7 @@ class StockAnalysisPipeline:
                 trend_result,
                 stock_name,  # 传入股票名称
                 fundamental_context,
+                tier_info=tier_info,
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
@@ -403,7 +403,8 @@ class StockAnalysisPipeline:
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
         stock_name: str = "",
-        fundamental_context: Optional[Dict[str, Any]] = None
+        fundamental_context: Optional[Dict[str, Any]] = None,
+        tier_info: int = 0
     ) -> Dict[str, Any]:
         """
         增强分析上下文
@@ -553,6 +554,10 @@ class StockAnalysisPipeline:
                 "invalid fundamental context",
             )
         )
+        
+        # 添加流动池梯队信息
+        if tier_info > 0:
+            enhanced['dynamic_pool_tier'] = tier_info
 
         return enhanced
 
@@ -566,6 +571,7 @@ class StockAnalysisPipeline:
         chip_data: Optional[ChipDistribution],
         fundamental_context: Optional[Dict[str, Any]] = None,
         trend_result: Optional[TrendAnalysisResult] = None,
+        tier_info: int = 0
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -582,6 +588,7 @@ class StockAnalysisPipeline:
                 "stock_name": stock_name,
                 "report_type": report_type.value,
                 "fundamental_context": fundamental_context,
+                "dynamic_pool_tier": tier_info,
             }
             
             if realtime_quote:
@@ -959,6 +966,7 @@ class StockAnalysisPipeline:
         single_stock_notify: bool = False,
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
+        tier_info: int = 0
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程
@@ -997,7 +1005,7 @@ class StockAnalysisPipeline:
                 return None
             
             effective_query_id = analysis_query_id or self.query_id or uuid.uuid4().hex
-            result = self.analyze_stock(code, report_type, query_id=effective_query_id)
+            result = self.analyze_stock(code, report_type, query_id=effective_query_id, tier_info=tier_info)
             
             if result:
                 if not result.success:
@@ -1043,7 +1051,8 @@ class StockAnalysisPipeline:
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
         send_notification: bool = True,
-        merge_notification: bool = False
+        merge_notification: bool = False,
+        tier_mapping: Optional[Dict[str, int]] = None
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -1120,6 +1129,7 @@ class StockAnalysisPipeline:
                     single_stock_notify=single_stock_notify and send_notification,
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
+                    tier_info=tier_mapping.get(code, 0) if tier_mapping else 0
                 ): code
                 for code in stock_codes
             }

@@ -125,11 +125,45 @@ class StockDaily(Base):
             'amount': self.amount,
             'pct_chg': self.pct_chg,
             'ma5': self.ma5,
-            'ma10': self.ma10,
             'ma20': self.ma20,
             'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
         }
+
+
+class DynamicPool(Base):
+    """
+    智能选股流动池数据模型
+
+    存储每日由智能选股 API 筛选出的股票，进行为期 3 天的生命周期管理。
+    """
+    __tablename__ = 'dynamic_pool'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # 股票信息
+    code = Column(String(10), nullable=False, index=True)
+    
+    # 加入时间
+    added_date = Column(Date, nullable=False, index=True)
+    
+    # 状态与原因
+    status = Column(String(16), nullable=False, default='active', index=True) # active / removed
+    remove_reason = Column(String(32)) # expired / below_ma10
+    
+    # 梯队打标
+    tier = Column(Integer, default=0) # 0: 无梯队, 1: 梯队1 (缩量回踩站稳五日线)
+    
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('code', name='uix_dynamic_pool_code'),
+    )
+
+    def __repr__(self):
+        return f"<DynamicPool(code={self.code}, status={self.status}, added_date={self.added_date})>"
+
 
 
 class NewsIntel(Base):
