@@ -582,9 +582,7 @@ class StockAnalysisPipeline:
             )
         )
         
-        # 添加流动池梯队信息
-        if tier_info > 0:
-            enhanced['dynamic_pool_tier'] = tier_info
+
 
         return enhanced
 
@@ -615,7 +613,6 @@ class StockAnalysisPipeline:
                 "stock_name": stock_name,
                 "report_type": report_type.value,
                 "fundamental_context": fundamental_context,
-                "dynamic_pool_tier": tier_info,
             }
             
             if realtime_quote:
@@ -1094,8 +1091,7 @@ class StockAnalysisPipeline:
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
         send_notification: bool = True,
-        merge_notification: bool = False,
-        tier_mapping: Optional[Dict[str, int]] = None
+        merge_notification: bool = False
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -1172,7 +1168,7 @@ class StockAnalysisPipeline:
                     single_stock_notify=single_stock_notify and send_notification,
                     report_type=report_type,  # Issue #119: 传递报告类型
                     analysis_query_id=uuid.uuid4().hex,
-                    tier_info=tier_mapping.get(code, 0) if tier_mapping else 0
+                    tier_info=0
                 ): code
                 for code in stock_codes
             }

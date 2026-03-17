@@ -324,16 +324,12 @@ def run_full_analysis(
             logger.info("正在预获取行情数据...")
             pipeline.run(stock_codes=stock_codes, dry_run=True, send_notification=False)
         
-        # 1. 简化版本：空梯队映射
-        tier_mapping = {}
-        
-        # 2. 运行个股分析 (使用评估出的梯队信息)
+        # 运行个股分析
         results = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
             send_notification=not args.no_notify,
-            merge_notification=merge_notification,
-            tier_mapping=tier_mapping
+            merge_notification=merge_notification
         )
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
