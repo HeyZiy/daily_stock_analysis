@@ -736,39 +736,7 @@ class Config:
             if _single_deepseek:
                 deepseek_api_keys = [_single_deepseek]
 
-        # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
-        litellm_model = os.getenv('LITELLM_MODEL', '').strip()
-        if not litellm_model:
-            _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
-            _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
-            _openai_model_name = os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip()
-            if gemini_api_keys:
-                litellm_model = f'gemini/{_gemini_model_name}'
-            elif anthropic_api_keys:
-                litellm_model = f'anthropic/{_anthropic_model_name}'
-            elif deepseek_api_keys:
-                litellm_model = 'deepseek/deepseek-chat'
-            elif openai_api_keys:
-                # For openai-compatible models, add prefix only if not already prefixed
-                if '/' not in _openai_model_name:
-                    litellm_model = f'openai/{_openai_model_name}'
-                else:
-                    litellm_model = _openai_model_name
-
-        # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
-        _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
-        if _fallback_str.strip():
-            litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
-        else:
-            # Backward compat: use gemini_model_fallback when primary is gemini
-            _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash').strip()
-            if litellm_model.startswith('gemini/') and _gemini_fallback:
-                _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
-                litellm_fallback_models = [_fb]
-            else:
-                litellm_fallback_models = []
-
-        # === LLM Channels + YAML config ===
+        # === LLM Channels config ===
         litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
         llm_models_source = "legacy_env"
         llm_channels: List[Dict[str, Any]] = []
@@ -801,14 +769,19 @@ class Config:
             if llm_model_list:
                 llm_models_source = "legacy_env"
 
-        # Auto-infer LITELLM_MODEL from channels when not explicitly set
+        # 读取 LITELLM_MODEL 和 LITELLM_FALLBACK_MODELS
+        litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
+        litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
+
+        # 如果没有设置 LITELLM_MODEL，尝试从渠道配置中推断
         if not litellm_model and llm_channels:
             for _ch in llm_channels:
                 if _ch.get('models'):
                     litellm_model = _ch['models'][0]
                     break
 
-        # Auto-infer LITELLM_FALLBACK_MODELS from channels when not explicitly set
+        # 如果没有设置 LITELLM_FALLBACK_MODELS，尝试从渠道配置中推断
         if not litellm_fallback_models and llm_channels and litellm_model:
             _all_ch_models: List[str] = []
             for _ch in llm_channels:
@@ -1134,11 +1107,9 @@ class Config:
 
         Format:
             LLM_CHANNELS=aihubmix,deepseek,gemini
-            LLM_AIHUBMIX_PROTOCOL=openai
             LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
             LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
             LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
-            LLM_AIHUBMIX_ENABLED=true
         """
         import logging
         _logger = logging.getLogger(__name__)
@@ -1150,11 +1121,11 @@ class Config:
                 continue
             ch_upper = ch_name.upper()
 
+            # 读取渠道配置
             base_url = os.getenv(f'LLM_{ch_upper}_BASE_URL', '').strip() or None
-            protocol_raw = os.getenv(f'LLM_{ch_upper}_PROTOCOL', '').strip()
             enabled = parse_env_bool(os.getenv(f'LLM_{ch_upper}_ENABLED'), default=True)
 
-            # API keys: LLM_{NAME}_API_KEYS (multi) > LLM_{NAME}_API_KEY (single)
+            # 读取 API keys（优先使用 API_KEYS，其次 API_KEY）
             api_keys_raw = os.getenv(f'LLM_{ch_upper}_API_KEYS', '')
             api_keys = [k.strip() for k in api_keys_raw.split(',') if k.strip()]
             if not api_keys:
@@ -1162,36 +1133,43 @@ class Config:
                 if single_key:
                     api_keys = [single_key]
 
-            # Models
+            # 读取模型列表
             models_raw = os.getenv(f'LLM_{ch_upper}_MODELS', '')
             raw_models = [m.strip() for m in models_raw.split(',') if m.strip()]
-            protocol = resolve_llm_channel_protocol(protocol_raw, base_url=base_url, models=raw_models, channel_name=ch_name)
-            models = [normalize_llm_channel_model(m, protocol, base_url) for m in raw_models]
 
-            # Extra headers (JSON string, optional)
-            extra_headers_raw = os.getenv(f'LLM_{ch_upper}_EXTRA_HEADERS', '').strip()
-            extra_headers = None
-            if extra_headers_raw:
-                try:
-                    extra_headers = json.loads(extra_headers_raw)
-                except json.JSONDecodeError:
-                    _logger.warning(f"LLM_{ch_upper}_EXTRA_HEADERS: invalid JSON, ignored")
+            # 确定协议
+            protocol = ch_name.lower()
+            # 特殊处理 aihubmix，默认使用 openai 协议
+            if protocol == 'aihubmix':
+                protocol = 'openai'
 
+            # 标准化模型名称
+            models = []
+            for model in raw_models:
+                if '/' in model:
+                    # 如果已经包含 provider 前缀，直接使用
+                    models.append(model)
+                else:
+                    # 根据模型名称智能判断 provider
+                    model_lower = model.lower()
+                    if 'claude' in model_lower:
+                        models.append(f'anthropic/{model}')
+                    elif 'gemini' in model_lower:
+                        models.append(f'gemini/{model}')
+                    elif 'deepseek' in model_lower:
+                        models.append(f'deepseek/{model}')
+                    elif 'gpt' in model_lower:
+                        models.append(f'openai/{model}')
+                    else:
+                        # 默认使用渠道协议
+                        models.append(f'{protocol}/{model}')
+
+            # 跳过禁用的渠道
             if not enabled:
                 _logger.info(f"LLM channel '{ch_name}': disabled, skipped")
                 continue
 
-            if protocol_raw and canonicalize_llm_channel_protocol(protocol_raw) not in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
-                _logger.warning(
-                    "LLM_%s_PROTOCOL=%s is unsupported; auto-detected protocol=%s",
-                    ch_upper,
-                    protocol_raw,
-                    protocol or "unknown",
-                )
-
-            if not api_keys and channel_allows_empty_api_key(protocol, base_url):
-                api_keys = [""]
-
+            # 跳过缺少 API key 或模型的渠道
             if not api_keys:
                 _logger.warning(f"LLM channel '{ch_name}': no API key configured, skipped")
                 continue
@@ -1199,6 +1177,7 @@ class Config:
                 _logger.warning(f"LLM channel '{ch_name}': no models configured, skipped")
                 continue
 
+            # 添加渠道配置
             channels.append({
                 'name': ch_name.lower(),
                 'protocol': protocol,
@@ -1206,7 +1185,7 @@ class Config:
                 'base_url': base_url,
                 'api_keys': api_keys,
                 'models': models,
-                'extra_headers': extra_headers,
+                'extra_headers': None,
             })
             _logger.info(f"LLM channel '{ch_name}': {len(models)} model(s), {len(api_keys)} key(s)")
 
