@@ -40,7 +40,7 @@
 | 历史记录 | 批量管理 | 支持多选、全选及批量删除历史分析记录，优化管理效率与 UI/UX 体验 |
 | 回测 | AI 回测验证 | 自动评估历史分析准确率，方向胜率、止盈止损命中率 |
 | **Agent 问股** | **策略对话** | **多轮策略问答，支持均线金叉/缠论/波浪等 11 种内置策略，Web/Bot/API 全链路** |
-| **智能选股** | **自然语言选股** | **支持通过 `--smart-screen` 参数进行自然语言选股，并自动合并到自选池进行每日分析** |
+| **智能选股** | **自然语言选股** | **独立模块 `mx_smart_screen.py` 支持自然语言选股，选股结果可自动同步到妙想自选股** |
 | 推送 | 多渠道通知 | 企业微信、飞书、Telegram、Discord、钉钉、邮件、Pushover |
 | 自动化 | 定时运行 | GitHub Actions 定时执行，无需服务器 |
 
@@ -246,6 +246,33 @@ LITELLM_MODEL=openai/deepseek-chat
 
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
 > 桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)
+
+### 智能选股（独立模块）
+
+项目提供独立的智能选股模块 `mx_smart_screen.py`，支持通过自然语言条件选股：
+
+```bash
+# 使用环境变量 SMART_SCREEN_KEYWORD 中的选股条件
+python mx_smart_screen.py
+
+# 直接指定选股条件
+python mx_smart_screen.py "市值大于50亿小于250亿；均线多头排列；换手率大于4%"
+
+# 查看当前自选股
+python mx_smart_screen.py --list
+
+# 选股并添加到妙想自选股
+python mx_smart_screen.py --add-to-self
+```
+
+**配置说明**：
+- 需在 `.env` 中配置 `MX_APIKEY`（妙想 API Key）
+- 可在 `.env` 中配置 `SMART_SCREEN_KEYWORD` 作为默认选股条件
+
+**工作流程**：
+1. 使用 `mx_smart_screen.py` 进行智能选股
+2. 选股结果可通过 `--add-to-self` 同步到妙想自选股
+3. `main.py` 会自动读取妙想自选股作为分析股票池
 
 ## 📱 推送效果
 

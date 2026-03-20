@@ -211,14 +211,6 @@ def parse_arguments() -> argparse.Namespace:
         help='强制回测（即使已有回测结果也重新计算）'
     )
 
-    parser.add_argument(
-        '--smart-screen', '-s',
-        type=str,
-        nargs='?',
-        const='__USE_CONFIG__',
-        help='使用自然语言进行智能选股，结果将与现有股票池合并分析 (不填则使用环境变量 SMART_SCREEN_KEYWORD)'
-    )
-
     return parser.parse_args()
 
 
@@ -548,53 +540,30 @@ def main() -> int:
         logger.warning(warning)
     
     # 解析股票列表（统一为大写 Issue #355）
-    stock_codes = None
+    # 1. 永远先读取妙想自选股作为基础股票池
+    stock_codes = []
+    try:
+        from test_mx_stock_manager import MXStockManager
+        mx_manager = MXStockManager()
+        self_selected_stocks = mx_manager.get_self_selected_stocks()
+        if self_selected_stocks:
+            stock_codes = [stock.code for stock in self_selected_stocks]
+            logger.info(f"从妙想自选股获取到 {len(stock_codes)} 只股票: {stock_codes}")
+        else:
+            logger.info("妙想自选股为空")
+    except Exception as e:
+        logger.warning(f"从妙想自选股获取股票失败: {e}")
+
+    # 2. 如果用户指定了额外股票，添加到股票池并去重
     if args.stocks:
-        stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
-        logger.info(f"使用命令行指定的股票列表: {stock_codes}")
-
-    # === 处理智能选股 (--smart-screen) ===
-    screened_codes = []
-    screen_keyword = args.smart_screen
-    if screen_keyword == '__USE_CONFIG__':
-        screen_keyword = config.smart_screen_keyword
-    elif not screen_keyword and config.smart_screen_keyword:
-        if not args.stocks:
-             screen_keyword = config.smart_screen_keyword
-
-    if screen_keyword:
-        if not config.mx_apikey:
-            env_val = os.getenv('MX_APIKEY')
-            logger.error(f"未配置 MX_APIKEY，智能选股功能不可用 (环境变量检测: {bool(env_val)})")
-            # 如果是命令行显式指定的选股，则报错退出
-            if args.smart_screen and args.smart_screen != '__USE_CONFIG__':
-                return 1
-            else:
-                screen_keyword = None
-                
-        if screen_keyword:
-            from src.services.stock_screen_service import StockScreenService
-            screen_service = StockScreenService(config.mx_apikey)
-            screened_codes = screen_service.get_screened_codes(screen_keyword)
-            
-            if screened_codes:
-                logger.info(f"智能选股完成 (条件: {screen_keyword})，找到 {len(screened_codes)} 只股票: {screened_codes}")
-            else:
-                logger.warning(f"智能选股 (条件: {screen_keyword}) 未找到匹配股票（API 返回为空或解析失败）")
-
-    # === 合并股票池 (静态配置 + 智能选股结果) ===
-    if not args.stocks:
-        # 如果用户未显式指定股票，则自动包含“自选股列表”和“智能选股结果”
-        base_pool = config.stock_list or []
-        if screened_codes:
-            logger.info(f"智能选股结果: {screened_codes}")
-        
-        # 合并去重
-        stock_codes = list(dict.fromkeys(base_pool + screened_codes))
-        logger.info(f"分析股票池合并完成，共 {len(stock_codes)} 只: {stock_codes}")
-    else:
-        # 用户命令行显式指定了股票，则仅分析指定的
-        logger.info(f"命令行显式指定分析 {len(stock_codes)} 只股票: {stock_codes}")
+        extra_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
+        # 合并并去重，保持原有顺序
+        seen = set(stock_codes)
+        for code in extra_codes:
+            if code not in seen:
+                stock_codes.append(code)
+                seen.add(code)
+        logger.info(f"用户指定股票 {len(extra_codes)} 只，合并后共 {len(stock_codes)} 只: {stock_codes}")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:

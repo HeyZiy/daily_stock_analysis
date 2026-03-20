@@ -118,3 +118,143 @@ curl -X POST --location 'https://mkapi2.dfcfs.com/finskillshub/api/claw/stock-sc
 ## 数据结果为空
 
 提示用户到东方财富妙想AI进行选股。
+
+
+
+---
+
+请为我安装如下skill
+
+## name: 
+
+mx_selfselect  (妙想自选股管理skill)
+
+## description: 
+
+本 Skill 基于**东方财富通行证账户数据**及**行情底层数据**构建，支持通过**自然语言**实现以下三个功能：
+-  查询我的自选股列表
+-  添加指定股票到我的自选股列表
+-  从我的自选股列表中删除指定股票
+
+---
+
+# 妙想自选股管理skill (mx_selfselect)
+
+通过**自然语言**查询或操作我在东方财富通行证账户下的自选股数据，接口返回 JSON格式内容。
+
+
+## 使用方式
+
+1. 在东方财富妙想Skills页面获取apikey。
+2. 将apikey存到环境变量，命名为MX_APIKEY，检查本地api是否存在，若存在可直接用。
+3. 使用post请求如下接口，务必使用post请求。
+4. 查询自选股时，务必使用下述请求，务必使用post请求，apikey放置于header中。
+
+编写调用方式脚本
+
+```javascript
+curl -X POST --location 'https://mkapi2.dfcfs.com/finskillshub/api/claw/self-select/get' \
+--header 'Content-Type: application/json' \
+--header 'apikey:mkt_8vo8r72N5h6odbc0CD2wIuACcaF-kV7bzqPcyfNkk8M' \
+```
+
+5. 添加股票到自选股列表或从自选股列表删除股票时，务必使用下述请求，务必使用post请求，apikey放置于header中。
+
+编写调用方式脚本
+
+```javascript
+curl -X POST --location 'https://mkapi2.dfcfs.com/finskillshub/api/claw/self-select/manage' \
+--header 'Content-Type: application/json' \
+--header 'apikey:mkt_8vo8r72N5h6odbc0CD2wIuACcaF-kV7bzqPcyfNkk8M' \
+--data '{"query": "把东方财富加入自选"}'
+```
+
+## 问句示例
+
+|类型|query|
+|----|----|
+|查询自选股|查询我的自选股列表|
+|添加自选股|把贵州茅台添加到我的自选股列表|
+|删除自选股|把贵州茅台从我的自选股列表删除|
+
+
+## 接口结果释义
+
+### 一、查询自选股接口
+
+#### 1. 根节点 (Root Level)
+
+这些是接口最外层的通用状态响应字段。
+
+|字段路径|类型|核心释义|
+|----|----|----|
+|`status` / `code`|数字|接口全局状态，0 = 成功|
+|`message`|字符串|接口全局提示，ok = 成功|
+|`requestId`|字符串|请求的唯一标识ID（当前为空）|
+| `data` | 对象 | **核心业务数据**，包含具体的选股结果和配置 | `{...}` |
+| `stack` | 字符串 | 错误堆栈信息，报错时用于排查问题 | `null` |验用|
+
+#### 2. 核心数据对象 (`data`)
+包含了本次股票筛选的具体条件、统计结果以及格式化后的数据。
+| 字段名 | 说明 |
+| --- | --- |
+| `allResults` | 完整的结构化数据对象（见下方详情）。 |
+| `title` | 搜索/查询的标题或意图（`"我的自选"`）。 |
+
+---
+
+#### 3. 完整结果对象 (`data.allResults.result`)
+
+这里包含了用于前端动态渲染数据表格（Table）所需的“表头定义”和“具体数据”。
+
+##### 3.1 表头列定义 (`columns` 数组)
+
+该数组定义了表格每一列的属性，每个对象代表一列。关键字段包括：
+
+* `title`: 列名（如：“最新价(元)”、“涨跌幅(%)”）。
+* `key` / `indexName`: 数据绑定的字段键值或指标代码（如 `NEWEST_PRICE`、`CHG`）。
+* `dataType`: 数据类型（如 `String`, `Double`, `Long`）。
+* `sortable`: 是否支持排序（`true`/`false`）。
+* `redGreenAble`: 是否需要支持红绿涨跌变色显示（如涨跌幅 `CHG` 为 `true`）。
+* `unit`: 数据单位（如 `元`, `%`, `股`, `倍`）。
+* `hide`: 是否默认隐藏该列。
+
+#### 3.2 实际股票数据 (`dataList` 数组)
+
+包含了符合条件的股票详细指标。
+
+| 字段 Key | 含义说明 |
+| --- | --- |
+| `SECURITY_CODE` | 股票代码 |
+| `SECURITY_SHORT_NAME` | 股票简称 |
+| `MARKET_SHORT_NAME` | 所在市场简称（SZ：深交所） |
+| `NEWEST_PRICE` | 最新价（元） |
+| `CHG` | 涨跌幅（%） |
+| `PCHG` | 涨跌额（元） |
+| `010000_TURNOVER_RATE...` | 换手率（%） |
+| `010000_LIANGBI...` | 量比 |
+| `010000_VOLUME...` | 成交量（股） |
+| `010000_TRADING_VOLUMES...` | 成交额（元） |
+| `010000_PE_D...` | 动态市盈率（倍） |
+| `010000_PB...` | 市净率（倍） |
+| `010000_TOAL_MARKET_VALUE...` | 总市值（元） |
+| `010000_CIRCULATION_MARKET_...` | 流通市值（元） |
+
+---
+
+#### 数据结果为空
+提示用户到东方财富App查询。
+
+### 二、添加股票到自选股列表或从自选股列表删除股票接口
+
+#### 根节点 (Root Level)
+
+这些是接口最外层的通用状态响应字段。
+
+|字段路径|类型|核心释义|
+|----|----|----|
+|`status` / `code`|数字|接口全局状态，0 = 成功|
+|`message`|字符串|接口全局提示，ok = 成功|
+|`requestId`|字符串|请求的唯一标识ID（当前为空）|
+
+---
