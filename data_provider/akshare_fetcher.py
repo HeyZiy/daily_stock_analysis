@@ -265,7 +265,8 @@ class AkshareFetcher(BaseFetcher):
     """
     
     name = "AkshareFetcher"
-    priority = int(os.getenv("AKSHARE_PRIORITY", "1"))
+    # 提升为最高优先级（有新浪财经作为备选，更稳定）
+    priority = int(os.getenv("AKSHARE_PRIORITY", "0"))
     
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         """

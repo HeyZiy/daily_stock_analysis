@@ -24,6 +24,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
@@ -50,6 +51,53 @@ except (ValueError, TypeError):
         "EFINANCE_CALL_TIMEOUT is not a valid integer, using default 30s"
     )
     _EF_CALL_TIMEOUT = 30
+
+# Connection pool settings for improved stability
+try:
+    _EF_MAX_RETRIES = int(os.environ.get("EFINANCE_MAX_RETRIES", "3"))
+except (ValueError, TypeError):
+    _EF_MAX_RETRIES = 3
+
+try:
+    _EF_RETRY_MIN_WAIT = int(os.environ.get("EFINANCE_RETRY_MIN_WAIT", "2"))
+except (ValueError, TypeError):
+    _EF_RETRY_MIN_WAIT = 2
+
+try:
+    _EF_RETRY_MAX_WAIT = int(os.environ.get("EFINANCE_RETRY_MAX_WAIT", "30"))
+except (ValueError, TypeError):
+    _EF_RETRY_MAX_WAIT = 30
+
+# Global session with connection pooling for better stability
+_session: Optional[requests.Session] = None
+_session_lock = threading.Lock()
+
+
+def _get_session() -> requests.Session:
+    """Get or create a global requests session with connection pooling.
+    
+    Using a shared session enables HTTP keep-alive and connection reuse,
+    which significantly reduces RemoteDisconnected errors when making
+    multiple requests to the same host.
+    """
+    global _session
+    if _session is None:
+        with _session_lock:
+            if _session is None:
+                _session = requests.Session()
+                # Configure connection pooling
+                adapter = requests.adapters.HTTPAdapter(
+                    pool_connections=10,      # Number of connection pools to cache
+                    pool_maxsize=20,          # Max connections to save in the pool
+                    max_retries=requests.adapters.Retry(
+                        total=2,              # Total retries for connection errors
+                        backoff_factor=0.5,   # Backoff between retries
+                        status_forcelist=[500, 502, 503, 504],  # Retry on these status codes
+                    ),
+                )
+                _session.mount('https://', adapter)
+                _session.mount('http://', adapter)
+    return _session
 
 from patch.eastmoney_patch import eastmoney_patch
 from src.config import get_config
@@ -253,7 +301,8 @@ class EfinanceFetcher(BaseFetcher):
     """
     
     name = "EfinanceFetcher"
-    priority = int(os.getenv("EFINANCE_PRIORITY", "0"))  # 最高优先级，排在 AkshareFetcher 之前
+    # 降低优先级，让 AkshareFetcher 优先（Akshare 更稳定，支持新浪财经备选）
+    priority = int(os.getenv("EFINANCE_PRIORITY", "1"))
     
     def __init__(self, sleep_min: float = 1.5, sleep_max: float = 3.0):
         """
@@ -266,6 +315,8 @@ class EfinanceFetcher(BaseFetcher):
         self.sleep_min = sleep_min
         self.sleep_max = sleep_max
         self._last_request_time: Optional[float] = None
+        self._consecutive_errors: int = 0  # 连续错误计数，用于自适应流控
+        self._error_reset_time: Optional[float] = None  # 错误计数重置时间
         # 东财补丁开启才执行打补丁操作
         if get_config().enable_eastmoney_patch:
             eastmoney_patch()
@@ -304,36 +355,70 @@ class EfinanceFetcher(BaseFetcher):
     
     def _enforce_rate_limit(self) -> None:
         """
-        强制执行速率限制
+        强制执行速率限制（增强版，带自适应流控）
         
         策略：
         1. 检查距离上次请求的时间间隔
         2. 如果间隔不足，补充休眠时间
-        3. 然后再执行随机 jitter 休眠
+        3. 根据连续错误次数动态增加休眠时间（自适应流控）
+        4. 执行随机 jitter 休眠
+        5. 重置错误计数（如果距离上次错误已超过60秒）
         """
+        now = time.time()
+        
+        # 重置错误计数（如果距离上次错误已超过60秒）
+        if self._error_reset_time is not None and now - self._error_reset_time > 60:
+            if self._consecutive_errors > 0:
+                logger.debug(f"重置连续错误计数: {self._consecutive_errors} -> 0")
+                self._consecutive_errors = 0
+                self._error_reset_time = None
+        
+        # 基础间隔检查
         if self._last_request_time is not None:
-            elapsed = time.time() - self._last_request_time
+            elapsed = now - self._last_request_time
             min_interval = self.sleep_min
             if elapsed < min_interval:
                 additional_sleep = min_interval - elapsed
                 logger.debug(f"补充休眠 {additional_sleep:.2f} 秒")
                 time.sleep(additional_sleep)
         
+        # 自适应流控：根据连续错误次数增加额外休眠
+        if self._consecutive_errors > 0:
+            # 指数退避：每次错误增加 0.5-2 秒额外休眠
+            extra_sleep = min(self._consecutive_errors * 0.5, 3.0)  # 最多额外3秒
+            logger.debug(f"自适应流控: 连续{self._consecutive_errors}次错误，额外休眠{extra_sleep:.2f}秒")
+            time.sleep(extra_sleep)
+        
         # 执行随机 jitter 休眠
-        self.random_sleep(self.sleep_min, self.sleep_max)
+        jitter_sleep = random.uniform(self.sleep_min, self.sleep_max)
+        time.sleep(jitter_sleep)
         self._last_request_time = time.time()
     
+    def _record_error(self) -> None:
+        """记录一次错误，用于自适应流控"""
+        self._consecutive_errors += 1
+        self._error_reset_time = time.time()
+        logger.debug(f"记录错误，连续错误次数: {self._consecutive_errors}")
+    
+    def _record_success(self) -> None:
+        """记录一次成功，减少错误计数"""
+        if self._consecutive_errors > 0:
+            self._consecutive_errors = max(0, self._consecutive_errors - 1)
+            logger.debug(f"记录成功，连续错误次数减至: {self._consecutive_errors}")
+    
     @retry(
-        stop=stop_after_attempt(1),  # 减少到1次，避免触发限流
-        wait=wait_exponential(multiplier=1, min=4, max=60),  # 保持等待时间设置
+        stop=stop_after_attempt(_EF_MAX_RETRIES),  # 使用环境变量配置，默认3次
+        wait=wait_exponential(multiplier=1, min=_EF_RETRY_MIN_WAIT, max=_EF_RETRY_MAX_WAIT),
         retry=retry_if_exception_type((
             ConnectionError,
             TimeoutError,
             requests.exceptions.RequestException,
             requests.exceptions.ConnectionError,
-            requests.exceptions.ChunkedEncodingError
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.HTTPError,
         )),
         before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,  # 重试耗尽后抛出原始异常
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -417,6 +502,8 @@ class EfinanceFetcher(BaseFetcher):
                 if '日期' in df.columns:
                     logger.info(f"[API返回] 日期范围: {df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}")
                 logger.debug(f"[API返回] 最新3条数据:\n{df.tail(3).to_string()}")
+                # 记录成功，减少错误计数
+                self._record_success()
             else:
                 logger.warning(
                     "[API返回] Eastmoney 历史K线为空: "
@@ -428,6 +515,8 @@ class EfinanceFetcher(BaseFetcher):
             
         except Exception as e:
             api_elapsed = time.time() - api_start
+            # 记录错误，用于自适应流控
+            self._record_error()
             category, failure_message = self._build_history_failure_message(
                 stock_code=stock_code,
                 beg_date=beg_date,
