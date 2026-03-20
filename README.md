@@ -265,9 +265,16 @@ python mx_smart_screen.py --list
 python mx_smart_screen.py --add-to-self
 ```
 
+**GitHub Actions 自动选股**：
+项目提供智能选股工作流，可在工作日收盘后自动执行选股并加入自选：
+
+- **定时触发**：每天北京时间 15:30（收盘后）自动执行
+- **手动触发**：支持自定义选股条件和数量
+- **自动同步**：选股结果自动添加到妙想自选股
+
 **配置说明**：
-- 需在 `.env` 中配置 `MX_APIKEY`（妙想 API Key）
-- 可在 `.env` 中配置 `SMART_SCREEN_KEYWORD` 作为默认选股条件
+- 需在 `.env` 或 GitHub Secrets 中配置 `MX_APIKEY`（妙想 API Key）
+- 可在 `.env` 或 GitHub Variables 中配置 `SMART_SCREEN_KEYWORD` 作为默认选股条件
 
 **工作流程**：
 1. 使用 `mx_smart_screen.py` 进行智能选股

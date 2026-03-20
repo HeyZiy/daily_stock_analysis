@@ -54,6 +54,65 @@ from src.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
+try:
+    import requests
+except ImportError:
+    requests = None
+    logger.warning("requests 模块未安装，妙想自选股功能不可用")
+
+
+def get_mx_self_selected_stocks(config: Config) -> List[str]:
+    """
+    从妙想获取自选股列表
+
+    Args:
+        config: 配置对象
+
+    Returns:
+        股票代码列表
+    """
+    if not config.mx_apikey:
+        logger.warning("未配置 MX_APIKEY，无法获取妙想自选股")
+        return []
+
+    if requests is None:
+        logger.warning("requests 模块未安装，无法获取妙想自选股")
+        return []
+
+    BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw"
+    url = f"{BASE_URL}/self-select/get"
+    headers = {
+        "Content-Type": "application/json",
+        "apikey": config.mx_apikey
+    }
+
+    try:
+        response = requests.post(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("status") != 0:
+            logger.warning(f"获取妙想自选股失败: {data.get('message', '未知错误')}")
+            return []
+
+        result = data.get("data", {}).get("allResults", {}).get("result", {})
+        data_list = result.get("dataList", [])
+
+        stock_codes = []
+        for item in data_list:
+            code = item.get("code")
+            if code:
+                stock_codes.append(code)
+
+        return stock_codes
+
+    except requests.RequestException as e:
+        logger.warning(f"请求妙想自选股异常: {e}")
+        return []
+    except Exception as e:
+        logger.warning(f"获取妙想自选股失败: {e}")
+        return []
+
 
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
@@ -541,18 +600,11 @@ def main() -> int:
     
     # 解析股票列表（统一为大写 Issue #355）
     # 1. 永远先读取妙想自选股作为基础股票池
-    stock_codes = []
-    try:
-        from test_mx_stock_manager import MXStockManager
-        mx_manager = MXStockManager()
-        self_selected_stocks = mx_manager.get_self_selected_stocks()
-        if self_selected_stocks:
-            stock_codes = [stock.code for stock in self_selected_stocks]
-            logger.info(f"从妙想自选股获取到 {len(stock_codes)} 只股票: {stock_codes}")
-        else:
-            logger.info("妙想自选股为空")
-    except Exception as e:
-        logger.warning(f"从妙想自选股获取股票失败: {e}")
+    stock_codes = get_mx_self_selected_stocks(config)
+    if stock_codes:
+        logger.info(f"从妙想自选股获取到 {len(stock_codes)} 只股票: {stock_codes}")
+    else:
+        logger.info("妙想自选股为空")
 
     # 2. 如果用户指定了额外股票，添加到股票池并去重
     if args.stocks:

@@ -1,0 +1,141 @@
+name: 智能选股
+
+on:
+  # 定时触发 - 每天北京时间 15:30 (UTC 07:30) 收盘后执行
+  schedule:
+    - cron: '30 7 * * 1-5'     # 周一到周五，UTC 07:30 = 北京时间 15:30
+  
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: '选股条件（留空则使用环境变量 SMART_SCREEN_KEYWORD）'
+        required: false
+        default: ''
+        type: string
+      page_size:
+        description: '选股数量限制'
+        required: false
+        default: '20'
+        type: string
+      add_to_self:
+        description: '是否添加到妙想自选股'
+        required: false
+        default: true
+        type: boolean
+
+# 并发控制：同一时间只运行一个选股任务
+concurrency:
+  group: smart-screen
+  cancel-in-progress: false
+
+jobs:
+  smart_screen:
+    runs-on: ubuntu-latest
+    # 添加超时限制
+    timeout-minutes: 10
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 创建必要目录
+        run: |
+          mkdir -p logs
+      
+      - name: 执行智能选股
+        env:
+          # ==========================================
+          # 妙想 API 配置
+          # ==========================================
+          MX_APIKEY: ${{ secrets.MX_APIKEY || secrets.MX_API_KEY || vars.MX_APIKEY || vars.MX_API_KEY }}
+          
+          # 默认选股条件（可通过手动触发覆盖）
+          SMART_SCREEN_KEYWORD: ${{ vars.SMART_SCREEN_KEYWORD || secrets.SMART_SCREEN_KEYWORD || vars.SMART_SCREEN_CONDITION || secrets.SMART_SCREEN_CONDITION }}
+          
+        run: |
+          echo "=========================================="
+          echo "🔍 妙想智能选股工具"
+          echo "=========================================="
+          echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo ""
+          
+          # 配置检查
+          echo "=========================================="
+          echo "📋 配置检查"
+          echo "=========================================="
+          echo "MX API Key: $([ -n "$MX_APIKEY" ] && echo '✅ 已配置' || echo '❌ 未配置')"
+          echo "默认选股条件: $([ -n "$SMART_SCREEN_KEYWORD" ] && echo "✅ [$SMART_SCREEN_KEYWORD]" || echo '⚪ 未配置')"
+          echo ""
+          
+          if [ -z "$MX_APIKEY" ]; then
+            echo "❌ 错误: 未配置 MX_APIKEY"
+            echo "请在 GitHub Secrets 中添加 MX_APIKEY"
+            exit 1
+          fi
+          
+          # 构建命令行参数
+          KEYWORD_ARG=""
+          if [ -n "${{ github.event.inputs.keyword }}" ]; then
+            KEYWORD_ARG="${{ github.event.inputs.keyword }}"
+            echo "📝 使用手动指定的选股条件: $KEYWORD_ARG"
+          elif [ -n "$SMART_SCREEN_KEYWORD" ]; then
+            echo "📝 使用默认选股条件: $SMART_SCREEN_KEYWORD"
+          else
+            echo "❌ 错误: 未指定选股条件"
+            echo "请通过以下方式之一指定："
+            echo "  1. 在 GitHub Secrets/Variables 中配置 SMART_SCREEN_KEYWORD"
+            echo "  2. 手动触发时指定 keyword 参数"
+            exit 1
+          fi
+          
+          PAGE_SIZE_ARG="${{ github.event.inputs.page_size || '20' }}"
+          echo "📊 选股数量限制: $PAGE_SIZE_ARG"
+          
+          ADD_TO_SELF_ARG=""
+          if [ "${{ github.event.inputs.add_to_self }}" = "true" ] || [ -z "${{ github.event.inputs.add_to_self }}" ]; then
+            ADD_TO_SELF_ARG="--add-to-self"
+            echo "✅ 将选股结果添加到妙想自选股"
+          else
+            echo "⚪ 仅选股，不添加到自选股"
+          fi
+          
+          echo ""
+          echo "=========================================="
+          echo "🚀 开始执行智能选股"
+          echo "=========================================="
+          echo ""
+          
+          # 执行选股
+          python mx_smart_screen.py $KEYWORD_ARG --page-size $PAGE_SIZE_ARG $ADD_TO_SELF_ARG
+      
+      - name: 上传日志
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: smart-screen-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7
+      
+      - name: 显示运行结果
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "📊 选股完成"
+          echo "=========================================="
+          if [ -f "logs/smart_screen_$(date +%Y%m%d).log" ]; then
+            echo "📜 最近日志（最后 50 行）:"
+            tail -50 logs/smart_screen_*.log 2>/dev/null || echo "无日志"
+          fi
