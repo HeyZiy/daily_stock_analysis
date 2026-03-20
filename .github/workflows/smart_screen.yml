@@ -48,7 +48,7 @@ jobs:
       - name: 安装依赖
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-smart-screen.txt
       
       - name: 创建必要目录
         run: |
