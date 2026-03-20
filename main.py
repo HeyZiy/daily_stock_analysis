@@ -100,7 +100,7 @@ def get_mx_self_selected_stocks(config: Config) -> List[str]:
 
         stock_codes = []
         for item in data_list:
-            code = item.get("code")
+            code = item.get("SECURITY_CODE")
             if code:
                 stock_codes.append(code)
 

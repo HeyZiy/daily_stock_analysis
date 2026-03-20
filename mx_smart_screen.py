@@ -21,7 +21,10 @@ import os
 import sys
 import argparse
 import logging
-from typing import List, Optional
+import json
+import requests
+from typing import List, Optional, Dict, Any
+from dataclasses import dataclass, field
 
 # 设置环境变量
 from src.config import setup_env
@@ -29,7 +32,35 @@ setup_env()
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
-from src.services.stock_screen_service import StockScreenService
+@dataclass
+class Stock:
+    """股票数据类 - 包含完整的自选股信息"""
+    code: str
+    name: str
+    market: str
+    newest_price: Optional[float] = None
+    chg: Optional[float] = None
+    pchg: Optional[float] = None  # 涨跌额
+    turnover_rate: Optional[float] = None  # 换手率
+    liangbi: Optional[float] = None  # 量比
+    volume: Optional[int] = None  # 成交量
+    trading_volume: Optional[float] = None  # 成交额
+    pe_d: Optional[float] = None  # 动态市盈率
+    pb: Optional[float] = None  # 市净率
+    total_market_value: Optional[float] = None  # 总市值
+    circulation_market_value: Optional[float] = None  # 流通市值
+    # 扩展字段（原始数据中可能包含的其他字段）
+    extra_data: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        """格式化输出股票信息"""
+        parts = [f"{self.name}({self.code}) {self.market}"]
+        if self.newest_price is not None:
+            parts.append(f"最新价:{self.newest_price}")
+        if self.chg is not None:
+            parts.append(f"涨跌幅:{self.chg}%")
+        return " | ".join(parts)
+
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +130,13 @@ def get_screened_stocks(config: Config, keyword: str, page_size: int = 20) -> Li
         logger.error("请在 .env 文件中添加: MX_APIKEY=your_api_key")
         return []
 
-    screen_service = StockScreenService(config.mx_apikey)
-    screened_codes = screen_service.get_screened_codes(keyword, max_count=page_size)
-
-    return screened_codes
+    try:
+        manager = MXStockManager()
+        stocks = manager.select_stocks(keyword, page_no=1, page_size=page_size)
+        return [stock.code for stock in stocks]
+    except Exception as e:
+        logger.error(f"智能选股失败: {e}")
+        return []
 
 class MXStockManager:
     """妙想选股与自选股管理类"""
@@ -318,32 +352,32 @@ class MXStockManager:
         """解析股票数据项"""
         # 提取已知字段
         stock = Stock(
-            code=item.get("SECURITY_CODE", ""),
-            name=item.get("SECURITY_SHORT_NAME", ""),
-            market=item.get("MARKET_SHORT_NAME", ""),
-            newest_price=self._parse_float(item.get("NEWEST_PRICE")),
-            chg=self._parse_float(item.get("CHG")),
-            pchg=self._parse_float(item.get("PCHG")),
-        )
+                code=item.get("SECURITY_CODE", ""),
+                name=item.get("SECURITY_SHORT_NAME", ""),
+                market=item.get("MARKET_SHORT_NAME", ""),
+                newest_price=MXStockManager._parse_float(item.get("NEWEST_PRICE")),
+                chg=MXStockManager._parse_float(item.get("CHG")),
+                pchg=MXStockManager._parse_float(item.get("PCHG")),
+            )
 
         # 尝试提取其他可能的字段（字段名可能包含前缀，如 010000_TURNOVER_RATE...）
         for key, value in item.items():
             if "TURNOVER_RATE" in key:
-                stock.turnover_rate = self._parse_float(value)
+                stock.turnover_rate = MXStockManager._parse_float(value)
             elif "LIANGBI" in key:
-                stock.liangbi = self._parse_float(value)
+                stock.liangbi = MXStockManager._parse_float(value)
             elif key.endswith("VOLUME") and "TRADING" not in key:
-                stock.volume = self._parse_int(value)
+                stock.volume = MXStockManager._parse_int(value)
             elif "TRADING_VOLUMES" in key:
-                stock.trading_volume = self._parse_float(value)
+                stock.trading_volume = MXStockManager._parse_float(value)
             elif "PE_D" in key:
-                stock.pe_d = self._parse_float(value)
+                stock.pe_d = MXStockManager._parse_float(value)
             elif "PB" in key and "PCHG" not in key:
-                stock.pb = self._parse_float(value)
+                stock.pb = MXStockManager._parse_float(value)
             elif "TOAL_MARKET_VALUE" in key or "TOTAL_MARKET_VALUE" in key:
-                stock.total_market_value = self._parse_float(value)
+                stock.total_market_value = MXStockManager._parse_float(value)
             elif "CIRCULATION_MARKET" in key:
-                stock.circulation_market_value = self._parse_float(value)
+                stock.circulation_market_value = MXStockManager._parse_float(value)
 
         if include_raw:
             stock.extra_data = item
