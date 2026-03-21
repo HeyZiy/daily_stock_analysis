@@ -96,7 +96,7 @@ class MarketCommand(BotCommand):
 
             # 初始化 AI 分析器
             analyzer = None
-            if config.gemini_api_key or config.openai_api_key:
+            if config.llm_model_list:
                 analyzer = GeminiAnalyzer()
 
             # 读取配置中的市场区域，与定时任务/CLI 保持一致

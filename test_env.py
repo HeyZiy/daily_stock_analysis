@@ -75,11 +75,12 @@ def test_config():
     if config.tushare_token:
         print(f"    Token 前8位: {config.tushare_token[:8]}...")
     
-    print(f"  Gemini API Key: {'已配置 ✓' if config.gemini_api_key else '未配置 ✗'}")
-    if config.gemini_api_key:
-        print(f"    Key 前8位: {config.gemini_api_key[:8]}...")
-    print(f"  Gemini 主模型: {config.gemini_model}")
-    print(f"  Gemini 备选模型: {config.gemini_model_fallback}")
+    print(f"  LLM 配置: {'已配置 ✓' if config.llm_model_list else '未配置 ✗'}")
+    if config.llm_model_list:
+        print(f"    渠道数: {len(config.llm_channels)}")
+        print(f"    模型数: {len(config.llm_model_list)}")
+        print(f"    主模型: {config.litellm_model}")
+        print(f"    备用模型: {', '.join(config.litellm_fallback_models)}")
     
     print(f"  MX API Key (妙想): {'已配置 ✓' if config.mx_apikey else '未配置 ✗'}")
     if config.mx_apikey:

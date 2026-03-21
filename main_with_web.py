@@ -599,7 +599,7 @@ def main() -> int:
         logger.warning(warning)
     
     # 解析股票列表（统一为大写 Issue #355）
-    # 1. 先读取妙想自选股作为基础股票池
+    # 1. 永远先读取妙想自选股作为基础股票池
     stock_codes = get_mx_self_selected_stocks(config)
     if stock_codes:
         logger.info(f"从妙想自选股获取到 {len(stock_codes)} 只股票: {stock_codes}")
@@ -627,10 +627,42 @@ def main() -> int:
     if config.webui_enabled and not (args.serve or args.serve_only):
         args.serve = True
 
+    # === 启动 Web 服务 (如果启用) ===
+    start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+
+    # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
+    if start_serve:
+        if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
+            args.host = os.getenv('WEBUI_HOST')
+        if args.port == 8000 and os.getenv('WEBUI_PORT'):
+            args.port = int(os.getenv('WEBUI_PORT'))
+
     bot_clients_started = False
+    if start_serve:
+        if not prepare_webui_frontend_assets():
+            logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
+        try:
+            start_api_server(host=args.host, port=args.port, config=config)
+            bot_clients_started = True
+        except Exception as e:
+            logger.error(f"启动 FastAPI 服务失败: {e}")
 
     if bot_clients_started:
         start_bot_stream_clients(config)
+
+    # === 仅 Web 服务模式：不自动执行分析 ===
+    if args.serve_only:
+        logger.info("模式: 仅 Web 服务")
+        logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
+        logger.info("通过 /api/v1/analysis/analyze 接口触发分析")
+        logger.info(f"API 文档: http://{args.host}:{args.port}/docs")
+        logger.info("按 Ctrl+C 退出...")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("\n用户中断，程序退出")
+        return 0
 
     try:
         # 模式0: 回测
@@ -741,6 +773,16 @@ def main() -> int:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 
         logger.info("\n程序执行完成")
+
+        # 如果启用了服务且是非定时任务模式，保持程序运行
+        keep_running = start_serve and not (args.schedule or config.schedule_enabled)
+        if keep_running:
+            logger.info("API 服务运行中 (按 Ctrl+C 退出)...")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
 
         return 0
 

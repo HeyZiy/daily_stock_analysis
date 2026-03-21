@@ -305,35 +305,7 @@ class Config:
     # Pre-built LiteLLM Router model_list (populated from channels, YAML, or legacy keys)
     llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
 
-    # Multi-key support: each list is parsed from *_API_KEYS (comma-separated) with single-key fallback
-    gemini_api_keys: List[str] = field(default_factory=list)
-    anthropic_api_keys: List[str] = field(default_factory=list)
-    openai_api_keys: List[str] = field(default_factory=list)
-    deepseek_api_keys: List[str] = field(default_factory=list)
 
-    # Legacy single-key fields (kept for backward compatibility; gemini_api_keys[0] when set)
-    gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-3-flash-preview"  # 主模型
-    gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
-    gemini_temperature: float = 0.7  # 温度参数（0.0-2.0，控制输出随机性，默认0.7）
-
-    # Gemini API 请求配置（防止 429 限流）
-    gemini_request_delay: float = 5.0  # 请求间隔（秒）
-    gemini_max_retries: int = 5  # 最大重试次数
-    gemini_retry_delay: float = 5.0  # 重试基础延时（秒）
-
-    # Anthropic Claude API（备选，当 Gemini 不可用时使用）
-    anthropic_api_key: Optional[str] = None
-    anthropic_model: str = "claude-3-5-sonnet-20241022"  # Claude model name
-    anthropic_temperature: float = 0.7  # Anthropic temperature (0.0-1.0, default 0.7)
-    anthropic_max_tokens: int = 8192  # Max tokens for Anthropic responses
-
-    # OpenAI 兼容 API（备选，当 Gemini/Anthropic 不可用时使用）
-    openai_api_key: Optional[str] = None
-    openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
-    openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
-    openai_vision_model: Optional[str] = None  # Deprecated: use VISION_MODEL instead
-    openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
 
     # === Vision 配置 ===
     # VISION_MODEL: litellm model string used for image understanding calls.
@@ -703,42 +675,9 @@ class Config:
         if not stock_list:
             stock_list = ['600519', '000001', '300750']
         
-        # === LiteLLM multi-key parsing ===
-        # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
-        _gemini_keys_raw = os.getenv('GEMINI_API_KEYS', '')
-        gemini_api_keys = [k.strip() for k in _gemini_keys_raw.split(',') if k.strip()]
-        _single_gemini = os.getenv('GEMINI_API_KEY', '').strip()
-        if not gemini_api_keys and _single_gemini:
-            gemini_api_keys = [_single_gemini]
-
-        # ANTHROPIC_API_KEYS > ANTHROPIC_API_KEY
-        _anthropic_keys_raw = os.getenv('ANTHROPIC_API_KEYS', '')
-        anthropic_api_keys = [k.strip() for k in _anthropic_keys_raw.split(',') if k.strip()]
-        _single_anthropic = os.getenv('ANTHROPIC_API_KEY', '').strip()
-        if not anthropic_api_keys and _single_anthropic:
-            anthropic_api_keys = [_single_anthropic]
-
-        # OPENAI_API_KEYS > AIHUBMIX_KEY > OPENAI_API_KEY
-        _openai_keys_raw = os.getenv('OPENAI_API_KEYS', '')
-        openai_api_keys = [k.strip() for k in _openai_keys_raw.split(',') if k.strip()]
-        if not openai_api_keys:
-            _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
-            _single_openai = os.getenv('OPENAI_API_KEY', '').strip()
-            _fallback_key = _aihubmix or _single_openai
-            if _fallback_key:
-                openai_api_keys = [_fallback_key]
-
-        # DEEPSEEK_API_KEYS > DEEPSEEK_API_KEY (independent from OpenAI-compatible layer)
-        _deepseek_keys_raw = os.getenv('DEEPSEEK_API_KEYS', '')
-        deepseek_api_keys = [k.strip() for k in _deepseek_keys_raw.split(',') if k.strip()]
-        if not deepseek_api_keys:
-            _single_deepseek = os.getenv('DEEPSEEK_API_KEY', '').strip()
-            if _single_deepseek:
-                deepseek_api_keys = [_single_deepseek]
-
-        # === LLM Channels config ===
+        # === LLM Channels config (唯一支持的配置方式) ===
         litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
-        llm_models_source = "legacy_env"
+        llm_models_source = ""
         llm_channels: List[Dict[str, Any]] = []
         llm_model_list: List[Dict[str, Any]] = []
 
@@ -757,17 +696,8 @@ class Config:
                 if llm_model_list:
                     llm_models_source = "llm_channels"
 
-        # Priority 3: Legacy env vars → auto-build model_list (backward compatible)
-        if not llm_model_list:
-            llm_model_list = cls._legacy_keys_to_model_list(
-                gemini_api_keys, anthropic_api_keys, openai_api_keys,
-                os.getenv('OPENAI_BASE_URL') or (
-                    'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
-                ),
-                deepseek_api_keys,
-            )
-            if llm_model_list:
-                llm_models_source = "legacy_env"
+        # 注意：原生配置（GEMINI_API_KEY, ANTHROPIC_API_KEY 等）已不再支持
+        # 请使用 LLM_CHANNELS 或 LITELLM_CONFIG 配置模型
 
         # 读取 LITELLM_MODEL 和 LITELLM_FALLBACK_MODELS
         litellm_model = os.getenv('LITELLM_MODEL', '').strip()
@@ -858,34 +788,7 @@ class Config:
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
             llm_model_list=llm_model_list,
-            gemini_api_keys=gemini_api_keys,
-            anthropic_api_keys=anthropic_api_keys,
-            openai_api_keys=openai_api_keys,
-            deepseek_api_keys=deepseek_api_keys,
-            gemini_api_key=os.getenv('GEMINI_API_KEY'),
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
-            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
-            gemini_temperature=float(os.getenv('GEMINI_TEMPERATURE', '0.7')),
-            gemini_request_delay=float(os.getenv('GEMINI_REQUEST_DELAY', '2.0')),
-            gemini_max_retries=int(os.getenv('GEMINI_MAX_RETRIES', '5')),
-            gemini_retry_delay=float(os.getenv('GEMINI_RETRY_DELAY', '5.0')),
-            anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
-            anthropic_temperature=float(os.getenv('ANTHROPIC_TEMPERATURE', '0.7')),
-            anthropic_max_tokens=int(os.getenv('ANTHROPIC_MAX_TOKENS', '8192')),
-            # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
-            # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.
-            # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
-            # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
-            # OPENAI_BASE_URL override is provided.
-            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-4o, gpt-4o-free, deepseek-chat).
-            openai_api_key=os.getenv('AIHUBMIX_KEY') or os.getenv('OPENAI_API_KEY') or None,
-            openai_base_url=os.getenv('OPENAI_BASE_URL') or (
-                'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
-            ),  # noqa: E501
-            openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
-            openai_vision_model=os.getenv('OPENAI_VISION_MODEL') or None,
-            openai_temperature=float(os.getenv('OPENAI_TEMPERATURE', '0.7')),
+
             # Vision model: VISION_MODEL > OPENAI_VISION_MODEL (alias) > default
             vision_model=(
                 os.getenv('VISION_MODEL')
@@ -1219,66 +1122,6 @@ class Config:
         return model_list
 
     @classmethod
-    def _legacy_keys_to_model_list(
-        cls,
-        gemini_keys: List[str],
-        anthropic_keys: List[str],
-        openai_keys: List[str],
-        openai_base_url: Optional[str],
-        deepseek_keys: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Build Router model_list from legacy per-provider keys (backward compat).
-
-        Returns a model_list where each provider's keys are expanded into
-        deployments, keyed by placeholder model_name tokens.  The analyzer
-        resolves actual model_names at call time from LITELLM_MODEL /
-        LITELLM_FALLBACK_MODELS.
-        """
-        model_list: List[Dict[str, Any]] = []
-
-        # Gemini keys
-        for k in gemini_keys:
-            if k and len(k) >= 8:
-                model_list.append({
-                    'model_name': '__legacy_gemini__',
-                    'litellm_params': {'model': '__legacy_gemini__', 'api_key': k},
-                })
-
-        # Anthropic keys
-        for k in anthropic_keys:
-            if k and len(k) >= 8:
-                model_list.append({
-                    'model_name': '__legacy_anthropic__',
-                    'litellm_params': {'model': '__legacy_anthropic__', 'api_key': k},
-                })
-
-        # OpenAI-compatible keys
-        for k in openai_keys:
-            if k and len(k) >= 8:
-                params: Dict[str, Any] = {'model': '__legacy_openai__', 'api_key': k}
-                if openai_base_url:
-                    params['api_base'] = openai_base_url
-                if openai_base_url and 'aihubmix.com' in openai_base_url:
-                    params['extra_headers'] = {'APP-Code': 'GPIJ3886'}
-                model_list.append({
-                    'model_name': '__legacy_openai__',
-                    'litellm_params': params,
-                })
-
-        # DeepSeek keys (native litellm provider — auto-resolves api_base)
-        for k in (deepseek_keys or []):
-            if k and len(k) >= 8:
-                model_list.append({
-                    'model_name': '__legacy_deepseek__',
-                    'litellm_params': {
-                        'model': '__legacy_deepseek__',
-                        'api_key': k,
-                    },
-                })
-
-        return model_list
-
-    @classmethod
     def _parse_stock_email_groups(cls) -> List[Tuple[List[str], List[str]]]:
         """
         Parse STOCK_GROUP_N and EMAIL_GROUP_N from environment.
@@ -1489,19 +1332,44 @@ class Config:
             ))
 
         # --- LLM availability ---
-        # llm_model_list is populated for YAML / channels / managed legacy keys.
-        # Other LiteLLM-native providers (for example cohere/*) run through the
-        # direct litellm env path and therefore do not populate llm_model_list.
+        # llm_model_list is populated for YAML / channels.
+        # Check for legacy config and provide migration guidance.
+        has_legacy_config = bool(
+            os.getenv('GEMINI_API_KEY') or os.getenv('GEMINI_API_KEYS') or
+            os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_API_KEYS') or
+            os.getenv('OPENAI_API_KEY') or os.getenv('OPENAI_API_KEYS') or
+            os.getenv('DEEPSEEK_API_KEY') or os.getenv('DEEPSEEK_API_KEYS') or
+            os.getenv('AIHUBMIX_KEY')
+        )
+        
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
         if not self.llm_model_list and not has_direct_env_model:
-            issues.append(ConfigIssue(
-                severity="error",
-                message=(
-                    "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS / *_API_KEY），"
-                    "AI 分析功能将不可用"
-                ),
-                field="LITELLM_CONFIG",
-            ))
+            if has_legacy_config:
+                # User has legacy config but no channel config
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "检测到传统 LLM 配置（GEMINI_API_KEY/ANTHROPIC_API_KEY 等），"
+                        "但项目已升级为仅支持 LLM_CHANNELS 配置方式。\n"
+                        "请迁移配置：\n"
+                        "  1. 将 GEMINI_API_KEY 改为 LLM_GEMINI_API_KEY\n"
+                        "  2. 添加 LLM_GEMINI_MODELS=gemini-3-flash-preview\n"
+                        "  3. 添加 LLM_CHANNELS=gemini\n"
+                        "  4. 删除旧的 GEMINI_API_KEY 配置\n"
+                        "详见文档：docs/LLM_CONFIG_GUIDE.md"
+                    ),
+                    field="LLM_CHANNELS",
+                ))
+            else:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS），"
+                        "AI 分析功能将不可用。"
+                        "请配置 LLM_CHANNELS 或 LITELLM_CONFIG"
+                    ),
+                    field="LLM_CHANNELS",
+                ))
         elif not self.litellm_model:
             issues.append(ConfigIssue(
                 severity="info",
@@ -1687,23 +1555,21 @@ def get_config() -> Config:
 # ============================================================
 
 def get_api_keys_for_model(model: str, config: Config) -> List[str]:
-    """Return explicitly managed API keys for a litellm model (legacy path only).
+    """Return API keys for a litellm model from channel configuration.
 
     When llm_model_list is populated (channels / YAML), the Router handles key
-    selection, so this function is not needed.  Kept for backward compat when
-    no Router is built and a direct litellm.completion() call is needed.
+    selection automatically. This function extracts keys from the model_list
+    for direct litellm.completion() calls when needed.
     """
-    provider = _get_litellm_provider(model)
-    if provider in {"gemini", "vertex_ai"}:
-        return [k for k in config.gemini_api_keys if k and len(k) >= 8]
-    if provider == "anthropic":
-        return [k for k in config.anthropic_api_keys if k and len(k) >= 8]
-    if provider == "deepseek":
-        return [k for k in config.deepseek_api_keys if k and len(k) >= 8]
-    if provider == "openai":
-        return [k for k in config.openai_api_keys if k and len(k) >= 8]
-    # Other LiteLLM-native providers – API key resolved from env vars
-    return []
+    # Extract keys from llm_model_list for the given model
+    keys = []
+    for entry in config.llm_model_list or []:
+        if entry.get("model_name") == model:
+            litellm_params = entry.get("litellm_params", {})
+            api_key = litellm_params.get("api_key")
+            if api_key and len(api_key) >= 8:
+                keys.append(api_key)
+    return keys
 
 
 def extra_litellm_params(model: str, config: Config) -> Dict[str, Any]:
