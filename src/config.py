@@ -1049,23 +1049,7 @@ class Config:
             # 标准化模型名称
             models = []
             for model in raw_models:
-                if '/' in model:
-                    # 如果已经包含 provider 前缀，直接使用
-                    models.append(model)
-                else:
-                    # 根据模型名称智能判断 provider
-                    model_lower = model.lower()
-                    if 'claude' in model_lower:
-                        models.append(f'anthropic/{model}')
-                    elif 'gemini' in model_lower:
-                        models.append(f'gemini/{model}')
-                    elif 'deepseek' in model_lower:
-                        models.append(f'deepseek/{model}')
-                    elif 'gpt' in model_lower:
-                        models.append(f'openai/{model}')
-                    else:
-                        # 默认使用渠道协议
-                        models.append(f'{protocol}/{model}')
+                models.append(model) # 直接添加模型名称，不进行任何处理，要求必须写正确格式
 
             # 跳过禁用的渠道
             if not enabled:

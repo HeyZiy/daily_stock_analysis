@@ -22,7 +22,9 @@ A股自选股智能分析系统 - 主调度程序
 - 买点偏好：缩量回踩 MA5/MA10 支撑
 """
 import os
+
 from src.config import setup_env
+
 setup_env()
 
 # 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
@@ -47,18 +49,13 @@ from data_provider.base import canonical_stock_code
 from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
 
-from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 
 
 logger = logging.getLogger(__name__)
 
-try:
-    import requests
-except ImportError:
-    requests = None
-    logger.warning("requests 模块未安装，妙想自选股功能不可用")
+import requests
 
 
 def get_mx_self_selected_stocks(config: Config) -> List[str]:
@@ -75,9 +72,6 @@ def get_mx_self_selected_stocks(config: Config) -> List[str]:
         logger.warning("未配置 MX_APIKEY，无法获取妙想自选股")
         return []
 
-    if requests is None:
-        logger.warning("requests 模块未安装，无法获取妙想自选股")
-        return []
 
     BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw"
     url = f"{BASE_URL}/self-select/get"
