@@ -55,114 +55,40 @@ jobs:
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
-      
+
+      - name: 解密 .env.gpg 文件
+        run: |
+          if ! command -v gpg >/dev/null 2>&1; then
+            echo "❌ GPG not installed"
+            exit 1
+          fi
+          if [ -f .env.gpg ]; then
+            echo "🔓 解密 .env.gpg 文件..."
+            gpg --quiet --batch --yes --decrypt --passphrase="${{ secrets.ENV_GPG_PASSPHRASE }}" --output .env .env.gpg
+            echo "✅ .env 文件解密成功"
+          else
+            echo "⚠️ 未找到 .env.gpg 文件，跳过解密"
+          fi
+
       - name: 执行股票分析
         env:
           # ==========================================
-          # AI 配置 - 使用 LLM_CHANNELS 方式
-          # ==========================================
-          # LLM_CHANNELS 配置（逗号分隔的渠道列表）
-          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || 'gemini,deepseek,aihubmix' }}
-          
-          # Gemini 渠道配置
-          LLM_GEMINI_API_KEYS: ${{ secrets.LLM_GEMINI_API_KEYS || secrets.GEMINI_API_KEY }}
-          LLM_GEMINI_MODELS: ${{ vars.LLM_GEMINI_MODELS || 'gemini/gemini-3-flash-preview' }}
-          
-          # DeepSeek 渠道配置
-          LLM_DEEPSEEK_API_KEY: ${{ secrets.LLM_DEEPSEEK_API_KEY || secrets.DEEPSEEK_API_KEY }}
-          LLM_DEEPSEEK_BASE_URL: ${{ vars.LLM_DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1' }}
-          LLM_DEEPSEEK_MODELS: ${{ vars.LLM_DEEPSEEK_MODELS || 'deepseek/deepseek-chat' }}
-          
-          # AIHubMix 渠道配置
-          LLM_AIHUBMIX_API_KEY: ${{ secrets.LLM_AIHUBMIX_API_KEY || secrets.AIHUBMIX_KEY }}
-          LLM_AIHUBMIX_BASE_URL: ${{ vars.LLM_AIHUBMIX_BASE_URL || 'https://aihubmix.com/v1' }}
-          LLM_AIHUBMIX_MODELS: ${{ vars.LLM_AIHUBMIX_MODELS || 'aihubmix/gpt-4.1-free,aihubmix/gemini-2.5-flash' }}
-          
-          # 主模型和备用模型配置
-          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || 'gemini/gemini-3-flash-preview' }}
-          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || 'deepseek/deepseek-chat,aihubmix/gpt-4.1-free' }}
-          
-          # 兼容旧配置（可选，用于平滑迁移）
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
-          # ==========================================
           # 数据源
           # ==========================================
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          
-          # ==========================================
-          # 智能选股 (妙想) ⬅️ 新增！
-          # ==========================================
-          MX_APIKEY: ${{ secrets.MX_APIKEY || secrets.MX_API_KEY || vars.MX_APIKEY || vars.MX_API_KEY }}
-          SMART_SCREEN_KEYWORD: ${{ vars.SMART_SCREEN_KEYWORD || secrets.SMART_SCREEN_KEYWORD || vars.SMART_SCREEN_CONDITION || secrets.SMART_SCREEN_CONDITION }}
-          
-          # ==========================================
-          # 搜索服务
-          # ==========================================
-          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
-          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
-          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-          MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
-          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
-          SEARXNG_BASE_URLS: ${{ secrets.SEARXNG_BASE_URLS }}
-          
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }} # 暂时没转移
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
           # ==========================================
-          
-          # 方式一：企业微信 Webhook
-          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
-          WECHAT_MSG_TYPE: ${{ vars.WECHAT_MSG_TYPE || secrets.WECHAT_MSG_TYPE || 'markdown' }}
-          
-          # 方式二：飞书 Webhook
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          
-          # 方式三：Telegram
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
-          
           # 方式四：邮件
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
-          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
-          
-          # 方式五：Pushover
-          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-          PUSHOVER_API_TOKEN: ${{ secrets.PUSHOVER_API_TOKEN }}
-          
-          # 方式六：PushPlus ⬅️ 新增！
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          
-          # 方式七：自定义 Webhook（钉钉、Bark、自建服务等）
-          CUSTOM_WEBHOOK_URLS: ${{ secrets.CUSTOM_WEBHOOK_URLS }}
-          CUSTOM_WEBHOOK_BEARER_TOKEN: ${{ secrets.CUSTOM_WEBHOOK_BEARER_TOKEN }}
-          
-          # 方式八：Discord
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-          DISCORD_MAIN_CHANNEL_ID: ${{ secrets.DISCORD_MAIN_CHANNEL_ID }}
-          
-          # 方式九：飞书云文档
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_FOLDER_TOKEN: ${{ secrets.FEISHU_FOLDER_TOKEN }}
-
-          # 方式十：AstrBot
-          ASTRBOT_URL: ${{ secrets.ASTRBOT_URL }}
-          ASTRBOT_TOKEN: ${{ secrets.ASTRBOT_TOKEN }}
-
-          # 方式十一：Server酱3
-          SERVERCHAN3_SENDKEY: ${{ secrets.SERVERCHAN3_SENDKEY }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }} # 暂时没转移
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }} # 暂时没转移
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }} # 暂时没转移
+          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }
 
           # ==========================================
           # 自选股配置
           # ==========================================
-          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
+          STOCK_LIST: ${{ vars.STOCK_LIST }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           
           # ==========================================
@@ -218,13 +144,6 @@ jobs:
           echo ""
           echo "  Gemini 渠道: $([ -n "$LLM_GEMINI_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  DeepSeek 渠道: $([ -n "$LLM_DEEPSEEK_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  AIHubMix 渠道: $([ -n "$LLM_AIHUBMIX_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo ""
-          echo "【兼容旧配置（可选）】"
-          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  AIHubMix Key:   $([ -n "$AIHUBMIX_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  OpenAI API Key: $([ -n "$OPENAI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Anthropic Key:  $([ -n "$ANTHROPIC_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo ""
           echo "【数据源 & 选股】"
           echo "  Tushare Token:  $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
@@ -240,12 +159,7 @@ jobs:
           echo "  SearXNG Base URLs: $([ -n "$SEARXNG_BASE_URLS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo ""
           echo "【通知渠道】"
-          echo "  PushPlus: $([ -n "$PUSHPLUS_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  企业微信: $([ -n "$WECHAT_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  飞书: $([ -n "$FEISHU_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Telegram: $([ -n "$TELEGRAM_BOT_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Discord: $([ -n "$DISCORD_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  AstrBot: $([ -n "$ASTRBOT_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  邮件: $([ -n "$EMAIL_SENDER" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "=========================================="
           echo ""
           
@@ -270,9 +184,7 @@ jobs:
         if: always()
         with:
           name: analysis-reports-${{ github.run_number }}
-          path: |
-            reports/
-            logs/
+          path: reports/
           retention-days: 30
       
       - name: 显示运行结果

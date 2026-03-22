@@ -1009,10 +1009,10 @@ class Config:
         """Parse LLM_CHANNELS env var and per-channel env vars.
 
         Format:
-            LLM_CHANNELS=aihubmix,deepseek,gemini
-            LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
-            LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
-            LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
+            LLM_CHANNELS=deepseek,gemini
+            LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+            LLM_DEEPSEEK_API_KEY=sk-xxx
+            LLM_DEEPSEEK_MODELS=deepseek-chat
         """
         import logging
         _logger = logging.getLogger(__name__)
@@ -1042,9 +1042,6 @@ class Config:
 
             # 确定协议
             protocol = ch_name.lower()
-            # 特殊处理 aihubmix，默认使用 openai 协议
-            if protocol == 'aihubmix':
-                protocol = 'openai'
 
             # 标准化模型名称
             models = []
@@ -1092,10 +1089,8 @@ class Config:
                         litellm_params['api_key'] = api_key
                     if ch['base_url']:
                         litellm_params['api_base'] = ch['base_url']
-                    # Auto-inject aihubmix sponsored header
+                    # 添加自定义 headers（如果有）
                     headers = dict(ch.get('extra_headers') or {})
-                    if ch['base_url'] and 'aihubmix.com' in ch['base_url']:
-                        headers.setdefault('APP-Code', 'GPIJ3886')
                     if headers:
                         litellm_params['extra_headers'] = headers
 
@@ -1322,8 +1317,7 @@ class Config:
             os.getenv('GEMINI_API_KEY') or os.getenv('GEMINI_API_KEYS') or
             os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_API_KEYS') or
             os.getenv('OPENAI_API_KEY') or os.getenv('OPENAI_API_KEYS') or
-            os.getenv('DEEPSEEK_API_KEY') or os.getenv('DEEPSEEK_API_KEYS') or
-            os.getenv('AIHUBMIX_KEY')
+            os.getenv('DEEPSEEK_API_KEY') or os.getenv('DEEPSEEK_API_KEYS')
         )
         
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
@@ -1569,8 +1563,6 @@ def extra_litellm_params(model: str, config: Config) -> Dict[str, Any]:
     if model.startswith("openai/") or "/" not in model:
         if config.openai_base_url:
             params["api_base"] = config.openai_base_url
-        if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
-            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
     return params
 
 
