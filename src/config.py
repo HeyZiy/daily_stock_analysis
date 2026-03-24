@@ -1003,6 +1003,33 @@ class Config:
 
         _logger.info("-" * 40)
 
+        # Process model_list to resolve os.environ/VAR_NAME syntax and validate entries
+        processed_list: List[Dict[str, Any]] = []
+        for entry in model_list:
+            if not isinstance(entry, dict):
+                continue
+            # Deep copy to avoid mutating original
+            processed_entry = dict(entry)
+            litellm_params = dict(processed_entry.get('litellm_params', {}))
+
+            # Resolve os.environ/VAR_NAME syntax for api_key
+            api_key = litellm_params.get('api_key', '')
+            if isinstance(api_key, str) and api_key.startswith('os.environ/'):
+                env_var = api_key.split('/', 1)[1]
+                litellm_params['api_key'] = os.getenv(env_var, '')
+
+            # Resolve os.environ/VAR_NAME syntax for api_base
+            api_base = litellm_params.get('api_base', '')
+            if isinstance(api_base, str) and api_base.startswith('os.environ/'):
+                env_var = api_base.split('/', 1)[1]
+                litellm_params['api_base'] = os.getenv(env_var, '')
+
+            processed_entry['litellm_params'] = litellm_params
+            processed_list.append(processed_entry)
+
+        _logger.info(f"LITELLM_CONFIG: loaded {len(processed_list)} model deployment(s)")
+        return processed_list
+
     @classmethod
     def _parse_llm_channels(cls, channels_str: str) -> List[Dict[str, Any]]:
         """Parse LLM_CHANNELS env var and per-channel env vars.
