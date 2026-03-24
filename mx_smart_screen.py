@@ -17,17 +17,17 @@
     python mx_smart_screen.py --add-to-self      # 选股并添加到自选股
 """
 
-import os
-import sys
 import argparse
-import logging
 import json
-import requests
-from typing import List, Optional, Dict, Any
+import logging
 from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
+
+import requests
 
 # 设置环境变量
 from src.config import setup_env
+
 setup_env()
 
 from src.config import get_config, Config
@@ -93,6 +93,7 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         '--add-to-self', '-a',
+        default=True,
         action='store_true',
         help='将选股结果添加到自选股'
     )
@@ -440,15 +441,8 @@ def add_stocks_to_self_select(stock_codes: List[str]) -> int:
 
     try:
         manager = MXStockManager()
-        success_count = 0
-
-        for code in stock_codes:
-            # 通过代码查询股票名称（这里简化处理，直接添加）
-            query = f"把{code}加入自选"
-            if manager.add_to_self_select(query):
-                success_count += 1
-
-        return success_count
+        query = f"把{stock_codes}加入自选"
+        manager.add_to_self_select(query)
 
     except Exception as e:
         logger.error(f"添加到自选股失败: {e}")
@@ -504,11 +498,10 @@ def main() -> int:
     # 模式2: 添加到自选股
     if args.add_to_self:
         logger.info("正在添加到自选股...")
-        success_count = add_stocks_to_self_select(screened_codes)
-        logger.info(f"成功添加 {success_count}/{len(screened_codes)} 只股票到自选股")
+        add_stocks_to_self_select(screened_codes)
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
