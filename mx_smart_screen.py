@@ -252,7 +252,9 @@ class MXStockManager:
                 print(f"选股失败: {data.get('message', '未知错误')}")
                 return []
 
-            result_data = data.get("data", {}).get("data", {}).get("result", {})
+            result_data = data['data']['data']['allResults']['result']
+            
+            # API 返回的数据可能在 dataList（数组）或 partialResults（管道符分隔的字符串）
             data_list = result_data.get("dataList", [])
 
             stocks = []
@@ -260,6 +262,7 @@ class MXStockManager:
                 stock = self._parse_stock_item(item)
                 stocks.append(stock)
 
+            logger.info(f"成功解析 {len(stocks)} 只股票")
             return stocks
 
         except requests.RequestException as e:
@@ -434,7 +437,6 @@ def add_stocks_to_self_select(stock_codes: List[str]) -> int:
     Returns:
         成功添加的数量
     """
-    from test_mx_stock_manager import MXStockManager
 
     try:
         manager = MXStockManager()
