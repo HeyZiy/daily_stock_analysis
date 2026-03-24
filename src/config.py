@@ -729,8 +729,7 @@ class Config:
         
         mx_apikey = (raw_mx or raw_mx_alt or '').strip() or None
         smart_screen_keyword = (
-            os.getenv('SMART_SCREEN_KEYWORD') or 
-            os.getenv('SMART_SCREEN_CONDITION') or 
+            os.getenv('SMART_SCREEN_KEYWORD') or
             ''
         ).strip() or None
 

@@ -59,10 +59,10 @@ jobs:
           # ==========================================
           # 妙想 API 配置
           # ==========================================
-          MX_APIKEY: ${{ secrets.MX_APIKEY || secrets.MX_API_KEY || vars.MX_APIKEY || vars.MX_API_KEY }}
+          MX_APIKEY: ${{ secrets.MX_APIKEY || vars.MX_APIKEY }}
           
           # 默认选股条件（可通过手动触发覆盖）
-          SMART_SCREEN_KEYWORD: ${{ vars.SMART_SCREEN_KEYWORD || secrets.SMART_SCREEN_KEYWORD || vars.SMART_SCREEN_CONDITION || secrets.SMART_SCREEN_CONDITION }}
+          SMART_SCREEN_KEYWORD: ${{ vars.SMART_SCREEN_KEYWORD || secrets.SMART_SCREEN_KEYWORD }}
           
         run: |
           echo "=========================================="
