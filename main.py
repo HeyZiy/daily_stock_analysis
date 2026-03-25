@@ -42,7 +42,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 from data_provider.base import canonical_stock_code
 from src.core.pipeline import StockAnalysisPipeline
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 import requests
 
 
-def get_mx_self_selected_stocks(config: Config) -> List[str]:
+def get_mx_self_selected_stocks(config: Config) -> Tuple[List[str], Dict[str, str]]:
     """
     从妙想获取自选股列表
 
@@ -65,11 +65,11 @@ def get_mx_self_selected_stocks(config: Config) -> List[str]:
         config: 配置对象
 
     Returns:
-        股票代码列表
+        (股票代码列表, 股票代码到名称的映射字典)
     """
     if not config.mx_apikey:
         logger.warning("未配置 MX_APIKEY，无法获取妙想自选股")
-        return []
+        return [], {}
 
 
     BASE_URL = "https://mkapi2.dfcfs.com/finskillshub/api/claw"
@@ -86,25 +86,29 @@ def get_mx_self_selected_stocks(config: Config) -> List[str]:
 
         if data.get("status") != 0:
             logger.warning(f"获取妙想自选股失败: {data.get('message', '未知错误')}")
-            return []
+            return [], {}
 
         result = data.get("data", {}).get("allResults", {}).get("result", {})
         data_list = result.get("dataList", [])
 
         stock_codes = []
+        name_mapping = {}
         for item in data_list:
             code = item.get("SECURITY_CODE")
+            name = item.get("SECURITY_SHORT_NAME")
             if code:
                 stock_codes.append(code)
+                if name:
+                    name_mapping[code] = name
 
-        return stock_codes
+        return stock_codes, name_mapping
 
     except requests.RequestException as e:
         logger.warning(f"请求妙想自选股异常: {e}")
-        return []
+        return [], {}
     except Exception as e:
         logger.warning(f"获取妙想自选股失败: {e}")
-        return []
+        return [], {}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -304,7 +308,8 @@ def _compute_trading_day_filter(
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
-    stock_codes: Optional[List[str]] = None
+    stock_codes: Optional[List[str]] = None,
+    stock_name_mapping: Optional[Dict[str, str]] = None
 ):
     """
     执行完整的分析流程（个股 + 大盘复盘）
@@ -360,6 +365,14 @@ def run_full_analysis(
             query_source="cli",
             save_context_snapshot=save_context_snapshot
         )
+
+        # 将妙想自选股名称预填充到缓存（如果有）
+        if stock_name_mapping:
+            if not hasattr(pipeline.fetcher_manager, '_stock_name_cache'):
+                pipeline.fetcher_manager._stock_name_cache = {}
+            for code, name in stock_name_mapping.items():
+                pipeline.fetcher_manager._stock_name_cache[code] = name
+            logger.info(f"已预填充 {len(stock_name_mapping)} 只股票名称从妙想自选股")
 
         # 预获取数据
         logger.info("正在预获取行情数据...")
@@ -589,7 +602,7 @@ def main() -> int:
     
     # 解析股票列表（统一为大写 Issue #355）
     # 1. 先读取妙想自选股作为基础股票池
-    stock_codes = get_mx_self_selected_stocks(config)
+    stock_codes, mx_name_mapping = get_mx_self_selected_stocks(config)
     if stock_codes:
         logger.info(f"从妙想自选股获取到 {len(stock_codes)} 只股票: {stock_codes}")
     else:
@@ -714,7 +727,7 @@ def main() -> int:
             from src.scheduler import run_with_schedule
 
             def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
+                run_full_analysis(config, args, stock_codes, mx_name_mapping)
 
             run_with_schedule(
                 task=scheduled_task,
@@ -725,7 +738,7 @@ def main() -> int:
 
         # 模式3: 正常单次运行
         if config.run_immediately:
-            run_full_analysis(config, args, stock_codes)
+            run_full_analysis(config, args, stock_codes, mx_name_mapping)
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 

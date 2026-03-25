@@ -1125,9 +1125,6 @@ class StockAnalysisPipeline:
             if prefetch_count > 0:
                 logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")
 
-        # Issue #455: 预取股票名称，避免并发分析时显示「股票xxxxx」
-        self.fetcher_manager.prefetch_stock_names(stock_codes, use_bulk=False)
-
         # 单股推送模式（#55）：从配置读取
         single_stock_notify = getattr(self.config, 'single_stock_notify', False)
         # Issue #119: 从配置读取报告类型
