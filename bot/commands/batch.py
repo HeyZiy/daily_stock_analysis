@@ -115,7 +115,6 @@ class BatchCommand(BotCommand):
             # 执行分析（会自动推送汇总报告）
             results = pipeline.run(
                 stock_codes=stock_list,
-                dry_run=False,
                 send_notification=True
             )
             

@@ -13,7 +13,6 @@ A股自选股智能分析系统 - 主调度程序
 使用方式：
     python main.py              # 正常运行
     python main.py --debug      # 调试模式
-    python main.py --dry-run    # 仅获取数据不分析
 
 交易理念（已融入分析）：
 - 严进策略：不追高，乖离率 > 5% 不买入
@@ -123,7 +122,6 @@ def parse_arguments() -> argparse.Namespace:
 示例:
   python main.py                    # 正常运行
   python main.py --debug            # 调试模式
-  python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
   python main.py --no-notify        # 不发送推送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
@@ -136,12 +134,6 @@ def parse_arguments() -> argparse.Namespace:
         '--debug',
         action='store_true',
         help='启用调试模式，输出详细日志'
-    )
-
-    parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='仅获取数据，不进行 AI 分析'
     )
 
     parser.add_argument(
@@ -357,6 +349,11 @@ def run_full_analysis(
             and not config.single_stock_notify
         )
 
+        # 检查 LLM 配置，如果没有则报错退出
+        if not config.llm_model_list:
+            logger.error("未配置 LLM，无法进行股票分析。请在 .env 文件中配置 LLM 相关环境变量（如 GEMINI_API_KEY 或 LITELLM_CONFIG）")
+            sys.exit(1)
+
         # 创建调度器
         save_context_snapshot = None
         if getattr(args, 'no_context_snapshot', False):
@@ -370,15 +367,13 @@ def run_full_analysis(
             save_context_snapshot=save_context_snapshot
         )
 
-        # 0. 预获取数据
-        if not args.dry_run:
-            logger.info("正在预获取行情数据...")
-            pipeline.run(stock_codes=stock_codes, dry_run=True, send_notification=False)
-        
+        # 预获取数据
+        logger.info("正在预获取行情数据...")
+        pipeline.run(stock_codes=stock_codes, send_notification=False)
+
         # 运行个股分析
         results = pipeline.run(
             stock_codes=stock_codes,
-            dry_run=args.dry_run,
             send_notification=not args.no_notify,
             merge_notification=merge_notification
         )

@@ -80,7 +80,6 @@ class AnalysisService:
             # 执行分析
             result = pipeline.process_single_stock(
                 code=stock_code,
-                skip_analysis=False,
                 single_stock_notify=send_notification,
                 report_type=rt
             )
