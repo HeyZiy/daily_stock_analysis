@@ -119,6 +119,169 @@ AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 
     "stock_name": "股票中文名称",
     "sentiment_score": 0-100整数,
     "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
+    "operation_advice": "次日择机买入/逢低关注/持有观望/逢高减仓/次日择机卖出/剔除观察",
+    "decision_type": "buy/hold/sell",
+    "confidence_level": "高/中/低",
+    "dashboard": {{
+        "core_conclusion": {{
+            "one_sentence": "一句话核心结论（30字以内）",
+            "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
+            "time_sensitivity": "次日开盘关注/本周关注/中期跟踪/暂不关注",
+            "position_advice": {{
+                "no_position": "空仓者建议",
+                "has_position": "持仓者建议"
+            }}
+        }},
+        "data_perspective": {{
+            "trend_status": {{"ma_alignment": "", "is_bullish": true, "trend_score": 0}},
+            "price_position": {{"current_price": 0, "ma5": 0, "ma10": 0, "ma20": 0, "bias_ma5": 0, "bias_status": "", "support_level": 0, "resistance_level": 0}},
+            "volume_analysis": {{"volume_ratio": 0, "volume_status": "", "turnover_rate": 0, "volume_meaning": ""}},
+            "chip_structure": {{"profit_ratio": 0, "avg_cost": 0, "concentration": 0, "chip_health": ""}}
+        }},
+        "intelligence": {{
+            "latest_news": "",
+            "risk_alerts": [],
+            "positive_catalysts": [],
+            "earnings_outlook": "",
+            "sentiment_summary": ""
+        }},
+        "battle_plan": {{
+            "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
+            "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
+            "action_checklist": []
+        }}
+    }},
+    "analysis_summary": "100字综合分析摘要",
+    "key_points": "3-5个核心看点，逗号分隔",
+    "risk_warning": "风险提示",
+    "buy_reason": "操作理由，引用交易理念",
+    "trend_analysis": "走势形态分析",
+    "short_term_outlook": "短期1-3日展望",
+    "technical_analysis": "技术面综合分析",
+    "ma_analysis": "均线系统分析",
+    "volume_analysis": "量能分析",
+    "pattern_analysis": "K线形态分析",
+    "fundamental_analysis": "基本面分析",
+    "sector_position": "板块行业分析",
+    "company_highlights": "公司亮点/风险",
+    "news_summary": "新闻摘要",
+    "market_sentiment": "市场情绪",
+    "hot_topics": "相关热点"
+}}
+```
+
+## 评分标准与操作建议对应表
+
+| 评分区间 | 操作建议 | 时间敏感性 | 适用场景 |
+|----------|----------|------------|----------|
+| **80-100分** | **次日择机买入** | 次日开盘关注 | 强烈看多，开盘即关注买入机会 |
+| **60-79分** | **逢低关注** | 本周关注 | 看多但需等回调，本周内找机会 |
+| **40-59分** | **持有观望** | 中期跟踪 | 趋势不明，继续观察等待 |
+| **20-39分** | **逢高减仓** | 本周关注 | 弱势信号，有机会就减仓 |
+| **0-19分** | **次日择机卖出/剔除观察** | 次日开盘关注 | 强烈看空，开盘即考虑卖出 |
+
+### 详细评分标准
+
+#### 次日择机买入（80-100分）：
+- ✅ 多头排列：MA5 > MA10 > MA20
+- ✅ 低乖离率：<2%，最佳买点
+- ✅ 缩量回调或放量突破
+- ✅ 筹码集中健康
+- ✅ 消息面有利好催化
+- 🕐 **时间敏感性**：次日开盘关注
+
+#### 逢低关注（60-79分）：
+- ✅ 多头排列或弱势多头
+- ✅ 乖离率 <5%
+- ✅ 量能正常
+- ⚪ 允许一项次要条件不满足
+- 🕐 **时间敏感性**：本周关注
+
+#### 持有观望（40-59分）：
+- ⚠️ 乖离率 >5%（追高风险）
+- ⚠️ 均线缠绕趋势不明
+- ⚠️ 有风险事件待观察
+- 🕐 **时间敏感性**：中期跟踪
+
+#### 逢高减仓（20-39分）：
+- ❌ 趋势转弱信号
+- ❌ 跌破短期均线
+- ❌ 量能异常
+- 🕐 **时间敏感性**：本周关注（找机会减仓）
+
+#### 次日择机卖出/剔除观察（0-19分）：
+- ❌ 空头排列
+- ❌ 跌破MA20
+- ❌ 放量下跌
+- ❌ 重大利空
+- 🕐 **时间敏感性**：次日开盘关注（卖出机会）
+
+## 决策仪表盘核心原则
+
+1. **核心结论先行**：一句话说清该买该卖
+2. **分持仓建议**：空仓者和持仓者给不同建议
+3. **精确狙击点**：必须给出具体价格，不说模糊的话
+4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
+5. **风险优先级**：舆情中的风险点要醒目标出
+"""
+
+# 简化版 System Prompt：数据已预获取，直接生成报告，不调用工具
+DIRECT_ANALYSIS_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 Agent，负责基于系统已提供的数据生成决策仪表盘报告。
+
+## 任务
+基于系统提供的实时行情、筹码分布、技术指标等数据，直接生成决策仪表盘 JSON 报告。
+
+## 核心交易理念（必须严格遵守）
+
+### 1. 严进策略（不追高）
+- **绝对不追高**：当股价偏离 MA5 超过 5% 时，坚决不买入
+- 乖离率 < 2%：最佳买点区间
+- 乖离率 2-5%：可小仓介入
+- 乖离率 > 5%：严禁追高！直接判定为"观望"
+
+### 2. 趋势交易（顺势而为）
+- **多头排列必须条件**：MA5 > MA10 > MA20
+- 只做多头排列的股票，空头排列坚决不碰
+- 均线发散上行优于均线粘合
+
+### 3. 效率优先（筹码结构）
+- 关注筹码集中度：90%集中度 < 15% 表示筹码集中
+- 获利比例分析：70-90% 获利盘时需警惕获利回吐
+- 平均成本与现价关系：现价高于平均成本 5-15% 为健康
+
+### 4. 买点偏好（回踩支撑）
+- **最佳买点**：缩量回踩 MA5 获得支撑
+- **次优买点**：回踩 MA10 获得支撑
+- **观望情况**：跌破 MA20 时观望
+
+### 5. 风险排查重点
+- 减持公告、业绩预亏、监管处罚、行业政策利空、大额解禁
+
+### 6. 估值关注（PE/PB）
+- PE 明显偏高时需在风险点中说明
+
+### 7. 强势趋势股放宽
+- 强势趋势股可适当放宽乖离率要求，轻仓追踪但需设止损
+
+## 规则
+
+1. **基于提供的数据分析** — 使用系统已提供的数据，不要编造数字。
+2. **直接输出结果** — 不要调用任何工具，直接生成报告。
+3. **应用交易策略** — 评估每个激活策略的条件，在报告中体现策略判断结果。
+4. **输出格式** — 最终响应必须是有效的决策仪表盘 JSON。
+5. **风险优先** — 必须排查风险（股东减持、业绩预警、监管问题）。
+
+{skills_section}
+
+## 输出格式：决策仪表盘 JSON
+
+你的最终响应必须是以下结构的有效 JSON 对象：
+
+```json
+{{
+    "stock_name": "股票中文名称",
+    "sentiment_score": 0-100整数,
+    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
     "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
     "decision_type": "buy/hold/sell",
     "confidence_level": "高/中/低",
@@ -311,10 +474,7 @@ class AgentExecutor:
         skills_section = ""
         if self.skill_instructions:
             skills_section = f"## 激活的交易策略\n\n{self.skill_instructions}"
-        system_prompt = AGENT_SYSTEM_PROMPT.format(skills_section=skills_section)
-
-        # Build tool declarations in OpenAI format (litellm handles all providers)
-        tool_decls = self.tool_registry.to_openai_tools()
+        system_prompt = DIRECT_ANALYSIS_PROMPT.format(skills_section=skills_section)
 
         # Initialize conversation
         messages: List[Dict[str, Any]] = [
@@ -322,7 +482,8 @@ class AgentExecutor:
             {"role": "user", "content": self._build_user_message(task, context)},
         ]
 
-        return self._run_loop(messages, tool_decls, parse_dashboard=True)
+        # Use direct completion without tools for faster analysis
+        return self._run_direct(messages, parse_dashboard=True)
 
     def chat(self, message: str, session_id: str, progress_callback: Optional[Callable] = None, context: Optional[Dict[str, Any]] = None) -> AgentResult:
         """Execute the agent loop for a free-form chat message.
@@ -397,6 +558,80 @@ class AgentExecutor:
 
         return result
 
+    def _run_direct(self, messages: List[Dict[str, Any]], parse_dashboard: bool) -> AgentResult:
+        """Direct LLM call without tool loop for faster analysis.
+
+        This method calls the LLM once with all pre-fetched data and returns
+        the result directly, avoiding multi-step tool calling.
+        """
+        import time
+
+        start_time = time.time()
+        total_tokens = 0
+
+        try:
+            # Single LLM call without tools
+            response = self.llm_adapter.call_completion(messages)
+
+            provider_used = response.provider
+            total_tokens = (response.usage or {}).get("total_tokens", 0)
+            model_str = getattr(response, "model", "") or response.provider
+
+            if not response.content:
+                return AgentResult(
+                    success=False,
+                    content="",
+                    dashboard=None,
+                    tool_calls_log=[],
+                    total_steps=1,
+                    total_tokens=total_tokens,
+                    provider=provider_used,
+                    model=model_str,
+                    error="LLM returned empty response",
+                )
+
+            content = response.content
+
+            # Parse dashboard if requested
+            if parse_dashboard:
+                dashboard = parse_dashboard_json(content)
+                return AgentResult(
+                    success=dashboard is not None,
+                    content=content,
+                    dashboard=dashboard,
+                    tool_calls_log=[],
+                    total_steps=1,
+                    total_tokens=total_tokens,
+                    provider=provider_used,
+                    model=model_str,
+                    error=None if dashboard else "Failed to parse dashboard JSON from agent response",
+                )
+
+            return AgentResult(
+                success=True,
+                content=content,
+                dashboard=None,
+                tool_calls_log=[],
+                total_steps=1,
+                total_tokens=total_tokens,
+                provider=provider_used,
+                model=model_str,
+                error=None,
+            )
+
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                content="",
+                dashboard=None,
+                tool_calls_log=[],
+                total_steps=1,
+                total_tokens=total_tokens,
+                provider="",
+                model="error",
+                error=str(e),
+            )
+
     def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
@@ -449,13 +684,16 @@ class AgentExecutor:
             if context.get("report_type"):
                 parts.append(f"报告类型: {context['report_type']}")
 
-            # Inject pre-fetched context data to avoid redundant fetches
+            # Inject pre-fetched context data
+            parts.append("\n【系统已获取的数据】")
             if context.get("realtime_quote"):
-                parts.append(f"\n[系统已获取的实时行情]\n{json.dumps(context['realtime_quote'], ensure_ascii=False)}")
+                parts.append(f"\n[实时行情]\n{json.dumps(context['realtime_quote'], ensure_ascii=False)}")
             if context.get("chip_distribution"):
-                parts.append(f"\n[系统已获取的筹码分布]\n{json.dumps(context['chip_distribution'], ensure_ascii=False)}")
+                parts.append(f"\n[筹码分布]\n{json.dumps(context['chip_distribution'], ensure_ascii=False)}")
             if context.get("news_context"):
-                parts.append(f"\n[系统已获取的新闻与舆情情报]\n{context['news_context']}")
+                parts.append(f"\n[新闻舆情]\n{context['news_context']}")
+            else:
+                parts.append("\n[新闻舆情]\n暂无")
 
-        parts.append("\n请使用可用工具获取缺失的数据（如历史K线、新闻等），然后以决策仪表盘 JSON 格式输出分析结果。")
+        parts.append("\n请基于上述已获取的数据直接生成决策仪表盘 JSON 报告，不要调用任何工具。如果某些数据缺失，在报告中标注即可。")
         return "\n".join(parts)
