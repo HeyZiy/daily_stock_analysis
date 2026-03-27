@@ -36,12 +36,12 @@ tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）
 google-search-results>=2.4.0  # SerpAPI（每月 100 次免费）
 
 # 网络请求
-requests>=2.31.0            # HTTP 请求
 markdown2>=2.4.0            # Markdown 转 HTML
 imgkit>=1.2.0              # Markdown 转图片（需安装 wkhtmltopdf）
 fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 httpx[socks]                # HTTP 客户端 + SOCKS 代理支持（OpenAI 可选依赖）
 dingtalk-stream >= 0.24.3    # 钉钉 Stream SDK
+
 # 数据库
 # SQLite 是 Python 内置，无需额外安装
 
@@ -55,7 +55,6 @@ lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml 
 # 报告模板引擎（Report Engine P0）
 jinja2>=3.1.0               # Jinja2 template engine for report rendering
 
-# FastAPI Web 框架
-fastapi>=0.109.0            # 现代 Python Web 框架
-uvicorn[standard]>=0.27.0   # ASGI 服务器
-python-multipart>=0.0.6     # FastAPI File/Form upload support
+# 开发工具（可选）
+# pytest>=7.0.0               # 测试框架
+# black>=23.0.0               # 代码格式化
