@@ -305,6 +305,11 @@ class Config:
     # Pre-built LiteLLM Router model_list (populated from channels, YAML, or legacy keys)
     llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
 
+    # --- Simple LLM config (for llm_client.py) ---
+    gemini_api_keys: List[str] = field(default_factory=list)  # Gemini API Keys
+    deepseek_api_keys: List[str] = field(default_factory=list)  # DeepSeek API Keys
+    deepseek_base_url: str = "https://api.deepseek.com/v1"  # DeepSeek API Base URL
+
 
 
     # === Vision 配置 ===
@@ -774,6 +779,11 @@ class Config:
             # 未显式配置时，根据消息类型选择默认字节数
             wechat_max_bytes = 2048 if wechat_msg_type_lower == 'text' else 4000
         
+        # 解析简单 LLM 配置（用于 llm_client.py）
+        gemini_api_keys = [k.strip() for k in os.getenv('GEMINI_API_KEY', '').split(',') if k.strip()]
+        deepseek_api_keys = [k.strip() for k in os.getenv('DEEPSEEK_API_KEY', '').split(',') if k.strip()]
+        deepseek_base_url = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1').rstrip('/')
+
         return cls(
             stock_list=stock_list,
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
@@ -787,6 +797,11 @@ class Config:
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
             llm_model_list=llm_model_list,
+
+            # Simple LLM config (for llm_client.py)
+            gemini_api_keys=gemini_api_keys,
+            deepseek_api_keys=deepseek_api_keys,
+            deepseek_base_url=deepseek_base_url,
 
             # Vision model: VISION_MODEL > OPENAI_VISION_MODEL (alias) > default
             vision_model=(

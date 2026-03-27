@@ -154,27 +154,13 @@ class SystemConfigService:
         api_keys = [segment.strip() for segment in api_key.split(",") if segment.strip()]
         selected_api_key = api_keys[0] if api_keys else ""
 
-        call_kwargs: Dict[str, Any] = {
-            "model": resolved_model,
-            "messages": [{"role": "user", "content": "Reply with OK"}],
-            "temperature": 0,
-            "max_tokens": 8,
-            "timeout": max(5.0, float(timeout_seconds)),
-        }
-        if selected_api_key:
-            call_kwargs["api_key"] = selected_api_key
-        if base_url.strip():
-            call_kwargs["api_base"] = base_url.strip()
-
+        # Test LLM channel with direct API call
         try:
-            import litellm
-
             started_at = time.perf_counter()
-            response = litellm.completion(**call_kwargs)
+            content = self._test_llm_channel_direct(
+                resolved_protocol, resolved_model, selected_api_key, base_url, timeout_seconds
+            )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            content = ""
-            if response and getattr(response, "choices", None):
-                content = str(response.choices[0].message.content or "").strip()
 
             if not content:
                 return {
@@ -204,6 +190,79 @@ class SystemConfigService:
                 "resolved_model": resolved_model,
                 "latency_ms": None,
             }
+
+    def _test_llm_channel_direct(
+        self,
+        protocol: str,
+        model: str,
+        api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> str:
+        """Test LLM channel with direct API call."""
+        import requests
+
+        timeout = max(5.0, float(timeout_seconds))
+        messages = [{"role": "user", "content": "Reply with OK"}]
+
+        if protocol == "gemini":
+            # Gemini API
+            model_name = model.replace("gemini/", "") if model.startswith("gemini/") else model
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+            params = {"key": api_key}
+            body = {
+                "contents": [{
+                    "role": "user",
+                    "parts": [{"text": messages[0]["content"]}]
+                }],
+                "generationConfig": {
+                    "temperature": 0,
+                    "maxOutputTokens": 8,
+                }
+            }
+            response = requests.post(url, params=params, json=body, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                return candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            return ""
+
+        elif protocol == "deepseek":
+            # DeepSeek API
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            body = {
+                "model": model.replace("deepseek/", "") if model.startswith("deepseek/") else model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 8,
+            }
+            url = base_url.strip() if base_url.strip() else "https://api.deepseek.com/v1/chat/completions"
+            response = requests.post(url, headers=headers, json=body, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        else:
+            # Generic OpenAI-compatible API
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            body = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 8,
+            }
+            url = base_url.strip() if base_url.strip() else "https://api.openai.com/v1/chat/completions"
+            response = requests.post(url, headers=headers, json=body, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
     def update(
         self,

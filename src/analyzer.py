@@ -17,17 +17,12 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
-import litellm
 from json_repair import repair_json
-from litellm import Router
 
-from src.agent.llm_adapter import get_thinking_extra_body
+from src.llm_client import get_llm_client
 from src.config import (
     Config,
-    extra_litellm_params,
-    get_api_keys_for_model,
     get_config,
-    get_configured_llm_models,
     resolve_news_window_days,
 )
 from src.storage import persist_llm_usage
@@ -695,95 +690,21 @@ class GeminiAnalyzer:
 5. **风险优先级**：舆情中的风险点要醒目标出"""
 
     def __init__(self, api_key: Optional[str] = None):
-        """Initialize LLM Analyzer via LiteLLM.
+        """Initialize LLM Analyzer.
 
         Args:
             api_key: Ignored (kept for backward compatibility). Keys are loaded from config.
         """
-        self._router = None
-        self._litellm_available = False
-        self._init_litellm()
-        if not self._litellm_available:
-            logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
-
-    def _has_channel_config(self, config: Config) -> bool:
-        """Check if multi-channel config (channels / YAML / legacy model_list) is active."""
-        return bool(config.llm_model_list) and not all(
-            e.get('model_name', '').startswith('__legacy_') for e in config.llm_model_list
-        )
-
-    def _init_litellm(self) -> None:
-        """Initialize litellm Router from channels / YAML / legacy keys."""
-        config = get_config()
-        litellm_model = config.litellm_model
-        if not litellm_model:
-            logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
-            return
-
-        self._litellm_available = True
-
-        # --- Channel / YAML path: build Router from pre-built model_list ---
-        if self._has_channel_config(config):
-            model_list = config.llm_model_list
-            self._router = Router(
-                model_list=model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
-            unique_models = list(dict.fromkeys(
-                e['litellm_params']['model'] for e in model_list
-            ))
-            logger.info(
-                f"Analyzer LLM: Router initialized from channels/YAML — "
-                f"{len(model_list)} deployment(s), models: {unique_models}"
-            )
-            return
-
-        # --- Legacy path: build Router for multi-key, or use single key ---
-        keys = get_api_keys_for_model(litellm_model, config)
-
-        if len(keys) > 1:
-            # Build legacy Router for primary model multi-key load-balancing
-            extra_params = extra_litellm_params(litellm_model, config)
-            legacy_model_list = [
-                {
-                    "model_name": litellm_model,
-                    "litellm_params": {
-                        "model": litellm_model,
-                        "api_key": k,
-                        **extra_params,
-                    },
-                }
-                for k in keys
-            ]
-            self._router = Router(
-                model_list=legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
-            logger.info(
-                f"Analyzer LLM: Legacy Router initialized with {len(keys)} keys "
-                f"for {litellm_model}"
-            )
-        elif keys:
-            logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
-        else:
-            logger.info(
-                f"Analyzer LLM: litellm initialized (model={litellm_model}, "
-                f"API key from environment)"
-            )
+        self._client = get_llm_client()
+        if not self._client.is_available():
+            logger.warning("No LLM configured (GEMINI_API_KEY / DEEPSEEK_API_KEY), AI analysis will be unavailable")
 
     def is_available(self) -> bool:
-        """Check if LiteLLM is properly configured with at least one API key."""
-        return self._router is not None or self._litellm_available
+        """Check if LLM is properly configured with at least one API key."""
+        return self._client.is_available()
 
-    def _call_litellm(self, prompt: str, generation_config: dict) -> Tuple[str, str, Dict[str, Any]]:
-        """Call LLM via litellm with fallback across configured models.
-
-        When channels/YAML are configured, every model goes through the Router
-        (which handles per-model key selection, load balancing, and retries).
-        In legacy mode, the primary model may use the Router while fallback
-        models fall back to direct litellm.completion().
+    def _call_llm(self, prompt: str, generation_config: dict) -> Tuple[str, str, Dict[str, Any]]:
+        """Call LLM with fallback across configured models.
 
         Args:
             prompt: User prompt text.
@@ -793,7 +714,6 @@ class GeminiAnalyzer:
             Tuple of (response text, model_used, usage). On success model_used is the full model
             name and usage is a dict with prompt_tokens, completion_tokens, total_tokens.
         """
-        config = get_config()
         max_tokens = (
             generation_config.get('max_output_tokens')
             or generation_config.get('max_tokens')
@@ -801,62 +721,25 @@ class GeminiAnalyzer:
         )
         temperature = generation_config.get('temperature', 0.7)
 
-        models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
-        models_to_try = [m for m in models_to_try if m]
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
 
-        use_channel_router = self._has_channel_config(config)
+        response = self._client.call(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=60.0,
+        )
 
-        last_error = None
-        for model in models_to_try:
-            try:
-                model_short = model.split("/")[-1] if "/" in model else model
-                call_kwargs: Dict[str, Any] = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
-                extra = get_thinking_extra_body(model_short)
-                if extra:
-                    call_kwargs["extra_body"] = extra
+        if response.error:
+            raise Exception(f"LLM call failed: {response.error}")
 
-                _router_model_names = set(get_configured_llm_models(config.llm_model_list))
-                if use_channel_router and self._router and model in _router_model_names:
-                    # Channel / YAML path: Router manages key + base_url per model
-                    response = self._router.completion(**call_kwargs)
-                elif self._router and model == config.litellm_model and not use_channel_router:
-                    # Legacy path: Router only for primary model multi-key
-                    response = self._router.completion(**call_kwargs)
-                else:
-                    # Legacy/direct-env path: direct call (also handles direct-env
-                    # providers like groq/ or bedrock/ that are not in the Router
-                    # model_list even when channel mode is active)
-                    keys = get_api_keys_for_model(model, config)
-                    if keys:
-                        call_kwargs["api_key"] = keys[0]
-                    call_kwargs.update(extra_litellm_params(model, config))
-                    response = litellm.completion(**call_kwargs)
+        if not response.content:
+            raise ValueError("LLM returned empty response")
 
-                if response and response.choices and response.choices[0].message.content:
-                    usage: Dict[str, Any] = {}
-                    if response.usage:
-                        usage = {
-                            "prompt_tokens": response.usage.prompt_tokens or 0,
-                            "completion_tokens": response.usage.completion_tokens or 0,
-                            "total_tokens": response.usage.total_tokens or 0,
-                        }
-                    return (response.choices[0].message.content, model, usage)
-                raise ValueError("LLM returned empty response")
-
-            except Exception as e:
-                logger.warning(f"[LiteLLM] {model} failed: {e}")
-                last_error = e
-                continue
-
-        raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
+        return (response.content, response.model, response.usage)
 
     def generate_text(
         self,
@@ -865,10 +748,6 @@ class GeminiAnalyzer:
         temperature: float = 0.7,
     ) -> Optional[str]:
         """Public entry point for free-form text generation.
-
-        External callers (e.g. MarketAnalyzer) must use this method instead of
-        calling _call_litellm() directly or accessing private attributes such as
-        _litellm_available, _router, _model, _use_openai, or _use_anthropic.
 
         Args:
             prompt:      Text prompt to send to the LLM.
@@ -879,15 +758,12 @@ class GeminiAnalyzer:
             Response text, or None if the LLM call fails (error is logged).
         """
         try:
-            result = self._call_litellm(
+            text, model_used, usage = self._call_llm(
                 prompt,
                 generation_config={"max_tokens": max_tokens, "temperature": temperature},
             )
-            if isinstance(result, tuple):
-                text, model_used, usage = result
-                persist_llm_usage(usage, model_used, call_type="market_review")
-                return text
-            return result
+            persist_llm_usage(usage, model_used, call_type="market_review")
+            return text
         except Exception as exc:
             logger.error("[generate_text] LLM call failed: %s", exc)
             return None
@@ -972,14 +848,14 @@ class GeminiAnalyzer:
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
 
-            # 使用 litellm 调用（支持完整性校验重试）
+            # 使用 LLM 调用（支持完整性校验重试）
             current_prompt = prompt
             retry_count = 0
             max_retries = config.report_integrity_retry if config.report_integrity_enabled else 0
 
             while True:
                 start_time = time.time()
-                response_text, model_used, llm_usage = self._call_litellm(current_prompt, generation_config)
+                response_text, model_used, llm_usage = self._call_llm(current_prompt, generation_config)
                 elapsed = time.time() - start_time
 
                 # 记录响应信息

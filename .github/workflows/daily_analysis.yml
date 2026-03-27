@@ -56,26 +56,19 @@ jobs:
         run: |
           mkdir -p data logs reports
 
-      - name: 解密 .env.gpg 文件
-        run: |
-          if ! command -v gpg >/dev/null 2>&1; then
-            echo "❌ GPG not installed"
-            exit 1
-          fi
-          if [ -f .env.gpg ]; then
-            echo "🔓 解密 .env.gpg 文件..."
-            gpg --quiet --batch --yes --decrypt --passphrase="${{ secrets.ENV_GPG_PASSPHRASE }}" --output .env .env.gpg
-            echo "✅ .env 文件解密成功"
-          else
-            echo "⚠️ 未找到 .env.gpg 文件，跳过解密"
-          fi
-
       - name: 执行股票分析
         env:
           # ==========================================
           # 数据源
           # ==========================================
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }} # 暂时没转移
+          # ==========================================
+          # AI 模型配置（简化版）
+          # ==========================================
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          # DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1' }}
+
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
           # ==========================================
@@ -113,16 +106,6 @@ jobs:
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
-          # 处理 LITELLM YAML 配置文件
-          if [ -n "$LITELLM_CONFIG_YAML" ] && [ -n "$LITELLM_CONFIG" ]; then
-            echo "📝 使用 GitHub Actions Secrets/Variables 中的 LITELLM_CONFIG_YAML 配置"
-            # 确保目录存在
-            mkdir -p "$(dirname "$LITELLM_CONFIG")"
-            # 写入配置文件（覆盖已有文件）
-            echo "$LITELLM_CONFIG_YAML" > "$LITELLM_CONFIG"
-            echo "✅ LITELLM 配置文件已写入: $LITELLM_CONFIG"
-          fi
-
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'stocks-only' }}"
           
