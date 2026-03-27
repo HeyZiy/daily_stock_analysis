@@ -349,8 +349,14 @@ def run_full_analysis(
         )
 
         # 检查 LLM 配置，如果没有则报错退出
-        if not config.llm_model_list:
-            logger.error("未配置 LLM，无法进行股票分析。请在 .env 文件中配置 LLM 相关环境变量（如 GEMINI_API_KEY 或 LITELLM_CONFIG）")
+        has_llm_config = bool(
+            getattr(config, 'gemini_api_keys', []) or
+            getattr(config, 'deepseek_api_keys', []) or
+            os.getenv('GEMINI_API_KEY') or
+            os.getenv('DEEPSEEK_API_KEY')
+        )
+        if not has_llm_config:
+            logger.error("未配置 LLM，无法进行股票分析。请在 .env 文件中配置 GEMINI_API_KEY 或 DEEPSEEK_API_KEY")
             sys.exit(1)
 
         # 创建调度器

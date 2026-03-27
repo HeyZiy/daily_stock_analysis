@@ -1352,98 +1352,23 @@ class Config:
             ))
 
         # --- LLM availability ---
-        # llm_model_list is populated for YAML / channels.
-        # Check for legacy config and provide migration guidance.
-        has_legacy_config = bool(
-            os.getenv('GEMINI_API_KEY') or os.getenv('GEMINI_API_KEYS') or
-            os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_API_KEYS') or
-            os.getenv('OPENAI_API_KEY') or os.getenv('OPENAI_API_KEYS') or
-            os.getenv('DEEPSEEK_API_KEY') or os.getenv('DEEPSEEK_API_KEYS')
+        # 简化版配置：直接使用 GEMINI_API_KEY / DEEPSEEK_API_KEY
+        has_simple_config = bool(
+            os.getenv('GEMINI_API_KEY') or os.getenv('DEEPSEEK_API_KEY')
         )
         
-        has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
-        if not self.llm_model_list and not has_direct_env_model:
-            if has_legacy_config:
-                # User has legacy config but no channel config
-                issues.append(ConfigIssue(
-                    severity="error",
-                    message=(
-                        "检测到传统 LLM 配置（GEMINI_API_KEY/ANTHROPIC_API_KEY 等），"
-                        "但项目已升级为仅支持 LLM_CHANNELS 配置方式。\n"
-                        "请迁移配置：\n"
-                        "  1. 将 GEMINI_API_KEY 改为 LLM_GEMINI_API_KEY\n"
-                        "  2. 添加 LLM_GEMINI_MODELS=gemini-3-flash-preview\n"
-                        "  3. 添加 LLM_CHANNELS=gemini\n"
-                        "  4. 删除旧的 GEMINI_API_KEY 配置\n"
-                        "详见文档：docs/LLM_CONFIG_GUIDE.md"
-                    ),
-                    field="LLM_CHANNELS",
-                ))
-            else:
-                issues.append(ConfigIssue(
-                    severity="error",
-                    message=(
-                        "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS），"
-                        "AI 分析功能将不可用。"
-                        "请配置 LLM_CHANNELS 或 LITELLM_CONFIG"
-                    ),
-                    field="LLM_CHANNELS",
-                ))
-        elif not self.litellm_model:
+        if not has_simple_config and not self.gemini_api_keys and not self.deepseek_api_keys:
             issues.append(ConfigIssue(
-                severity="info",
+                severity="error",
                 message=(
-                    "LITELLM_MODEL 未配置，将自动从可用 API Key 推断模型。"
-                    "建议尽早配置 LITELLM_MODEL（格式如 gemini/gemini-2.5-flash）"
+                    "未配置任何 LLM API Key。\n"
+                    "请配置以下环境变量之一：\n"
+                    "  - GEMINI_API_KEY（推荐，主模型）\n"
+                    "  - DEEPSEEK_API_KEY（可选，作为 fallback）"
                 ),
-                field="LITELLM_MODEL",
+                field="GEMINI_API_KEY",
             ))
-
-        available_router_models = get_configured_llm_models(self.llm_model_list)
-        available_router_model_set = set(available_router_models)
-        if available_router_model_set:
-            if (
-                self.litellm_model
-                and not _uses_direct_env_provider(self.litellm_model)
-                and self.litellm_model not in available_router_model_set
-            ):
-                issues.append(ConfigIssue(
-                    severity="error",
-                    message=(
-                        "LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
-                        f" 当前可用模型：{', '.join(available_router_models[:6])}"
-                    ),
-                    field="LITELLM_MODEL",
-                ))
-
-            invalid_fallbacks = [
-                model for model in (self.litellm_fallback_models or [])
-                if model and model not in available_router_model_set
-                and not _uses_direct_env_provider(model)
-            ]
-            if invalid_fallbacks:
-                issues.append(ConfigIssue(
-                    severity="warning",
-                    message=(
-                        "LITELLM_FALLBACK_MODELS 中包含未在当前渠道声明的模型："
-                        f"{', '.join(invalid_fallbacks[:3])}"
-                    ),
-                    field="LITELLM_FALLBACK_MODELS",
-                ))
-
-            if (
-                self.vision_model
-                and not _uses_direct_env_provider(self.vision_model)
-                and self.vision_model not in available_router_model_set
-            ):
-                issues.append(ConfigIssue(
-                    severity="warning",
-                    message=(
-                        "VISION_MODEL 未出现在当前渠道声明中。"
-                        f" 当前可用模型：{', '.join(available_router_models[:6])}"
-                    ),
-                    field="VISION_MODEL",
-                ))
+        # 简化版配置：不再检查 LITELLM_MODEL、fallback 和 vision 配置
 
         # --- Search engine (informational only) ---
         if not (
