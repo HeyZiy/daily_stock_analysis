@@ -62,6 +62,16 @@ jobs:
           # 数据源
           # ==========================================
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }} # 暂时没转移
+          MX_APIKEY: ${{ secrets.MX_APIKEY }}
+          # ==========================================
+          # 搜索引擎配置（至少配置一个）
+          # ==========================================
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS }}
           # ==========================================
           # AI 模型配置（简化版）
           # ==========================================
