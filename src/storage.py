@@ -623,6 +623,93 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class TrendTrackingPool(Base):
+    """
+    趋势跟踪池 - 用于管理趋势交易候选股票
+
+    职责：
+    1. 记录从选股结果中筛选出的值得跟踪的股票
+    2. 跟踪每只股票的状态变化（评分、价格、趋势）
+    3. 管理入池/出池生命周期
+    """
+    __tablename__ = 'trend_tracking_pool'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票基本信息
+    code = Column(String(10), nullable=False, index=True)
+    name = Column(String(50))
+
+    # 入池信息
+    entry_date = Column(Date, nullable=False, index=True)  # 入池日期
+    entry_score = Column(Integer)  # 入池时评分
+    entry_price = Column(Float)  # 入池时价格
+    entry_bias = Column(Float)  # 入池时乖离率(MA5)
+    entry_rsi = Column(Float)  # 入池时RSI
+    entry_advice = Column(String(20))  # 入池时操作建议
+
+    # 跟踪状态
+    status = Column(String(20), default='tracking', index=True)  # tracking(跟踪中)/bought(已买入)/removed(已移除)
+    track_days = Column(Integer, default=0)  # 已跟踪天数
+
+    # 最新评估（每日更新）
+    latest_analysis_date = Column(Date)  # 最新分析日期
+    latest_score = Column(Integer)  # 最新评分
+    latest_price = Column(Float)  # 最新价格
+    latest_bias = Column(Float)  # 最新乖离率
+    latest_rsi = Column(Float)  # 最新RSI
+    latest_advice = Column(String(20))  # 最新操作建议
+    trend_status = Column(String(20))  # 趋势状态：多头/空头/震荡
+
+    # 出池信息
+    exit_date = Column(Date)  # 出池日期
+    exit_reason = Column(String(50))  # 出池原因
+    exit_price = Column(Float)  # 出池时价格
+
+    # 买入信息（如果status=bought）
+    buy_date = Column(Date)  # 买入日期
+    buy_price = Column(Float)  # 买入价格
+    buy_trigger = Column(String(50))  # 买入触发条件
+
+    # 元数据
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_trend_pool_code_status', 'code', 'status'),
+        Index('ix_trend_pool_entry_date', 'entry_date'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'id': self.id,
+            'code': self.code,
+            'name': self.name,
+            'entry_date': self.entry_date.isoformat() if self.entry_date else None,
+            'entry_score': self.entry_score,
+            'entry_price': self.entry_price,
+            'entry_bias': self.entry_bias,
+            'entry_rsi': self.entry_rsi,
+            'entry_advice': self.entry_advice,
+            'status': self.status,
+            'track_days': self.track_days,
+            'latest_analysis_date': self.latest_analysis_date.isoformat() if self.latest_analysis_date else None,
+            'latest_score': self.latest_score,
+            'latest_price': self.latest_price,
+            'latest_bias': self.latest_bias,
+            'latest_rsi': self.latest_rsi,
+            'latest_advice': self.latest_advice,
+            'trend_status': self.trend_status,
+            'exit_date': self.exit_date.isoformat() if self.exit_date else None,
+            'exit_reason': self.exit_reason,
+            'exit_price': self.exit_price,
+            'buy_date': self.buy_date.isoformat() if self.buy_date else None,
+            'buy_price': self.buy_price,
+            'buy_trigger': self.buy_trigger,
+        }
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式

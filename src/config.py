@@ -14,11 +14,47 @@ import json
 import logging
 import os
 import re
+import socket
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from urllib.parse import urlparse
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
+
+
+logger = logging.getLogger(__name__)
+
+
+def _is_proxy_available(proxy_url: Optional[str]) -> bool:
+    """
+    检测代理是否可用
+    
+    Args:
+        proxy_url: 代理URL，如 http://127.0.0.1:7897
+        
+    Returns:
+        代理是否可用
+    """
+    if not proxy_url:
+        return False
+    
+    try:
+        parsed = urlparse(proxy_url)
+        host = parsed.hostname
+        port = parsed.port
+        
+        if not host or not port:
+            return False
+        
+        # 尝试连接代理端口
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)  # 2秒超时
+        result = sock.connect_ex((host, port))
+        sock.close()
+        
+        return result == 0
+    except Exception:
+        return False
 
 
 @dataclass
@@ -628,8 +664,27 @@ class Config:
         setup_env()
 
         # === 智能代理配置 (关键修复) ===
-        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
+        # 检测代理可用性，如果代理不可用则清除代理设置，避免后续请求失败
         http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+        https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+        
+        # 检测 HTTP 代理可用性
+        if http_proxy and not _is_proxy_available(http_proxy):
+            logger.warning(f"HTTP 代理不可用 ({http_proxy})，已自动禁用代理")
+            http_proxy = None
+            for key in ['HTTP_PROXY', 'http_proxy']:
+                if key in os.environ:
+                    del os.environ[key]
+        
+        # 检测 HTTPS 代理可用性
+        if https_proxy and not _is_proxy_available(https_proxy):
+            logger.warning(f"HTTPS 代理不可用 ({https_proxy})，已自动禁用代理")
+            https_proxy = None
+            for key in ['HTTPS_PROXY', 'https_proxy']:
+                if key in os.environ:
+                    del os.environ[key]
+        
+        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
         if http_proxy:
             # 国内金融数据源域名列表
             domestic_domains = [
@@ -663,7 +718,6 @@ class Config:
             os.environ['http_proxy'] = http_proxy
 
             # HTTPS_PROXY 同理
-            https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
             if https_proxy:
                 os.environ['HTTPS_PROXY'] = https_proxy
                 os.environ['https_proxy'] = https_proxy
