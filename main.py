@@ -380,10 +380,6 @@ def run_full_analysis(
                 pipeline.fetcher_manager._stock_name_cache[code] = name
             logger.info(f"已预填充 {len(stock_name_mapping)} 只股票名称从妙想自选股")
 
-        # 预获取数据
-        logger.info("正在预获取行情数据...")
-        pipeline.run(stock_codes=stock_codes, send_notification=False)
-        
         # 运行个股分析
         results = pipeline.run(
             stock_codes=stock_codes,

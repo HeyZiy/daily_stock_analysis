@@ -423,6 +423,7 @@ class Config:
 
     # 分析间隔时间（秒）- 用于避免API限流
     analysis_delay: float = 0.0  # 个股分析与大盘分析之间的延迟
+    gemini_request_delay: float = 0.0  # Gemini API 请求前延迟（秒），用于避免触发限流
 
     # Merge stock + market report into one notification (Issue #190)
     merge_email_notification: bool = False
@@ -876,6 +877,7 @@ class Config:
             report_integrity_retry=int(os.getenv('REPORT_INTEGRITY_RETRY', '1')),
             report_history_compare_n=int(os.getenv('REPORT_HISTORY_COMPARE_N', '0')),
             analysis_delay=float(os.getenv('ANALYSIS_DELAY', '0')),
+            gemini_request_delay=float(os.getenv('GEMINI_REQUEST_DELAY', '0')),
             merge_email_notification=os.getenv('MERGE_EMAIL_NOTIFICATION', 'false').lower() == 'true',
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
             wechat_max_bytes=wechat_max_bytes,

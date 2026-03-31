@@ -6,12 +6,10 @@
 
 - 遵循现有目录边界：
   - 后端逻辑优先放在 `src/`、`data_provider/`、`api/`、`bot/`
-  - 前端改动在 `apps/dsa-web/`
   - 部署与流水线改动在 `scripts/`、`.github/workflows/`、`docker/`
 - 未经明确确认，不执行 `git commit`、`git tag`、`git push`。
 - commit message 使用英文，不添加 `Co-Authored-By`。
 - 不写死密钥、账号、路径、模型名或环境差异逻辑。
-- 新增配置项时，必须同步更新 `.env.example` 和相关文档。
 - 涉及用户可见能力、CLI/API 行为、部署方式、通知方式、报告结构变化时，必须同步更新 `README.md` 和 `docs/CHANGELOG.md`。
 - 注释、docstring、日志文案以清晰准确为准，不强制要求英文，但应与文件语境保持一致。
 
@@ -51,18 +49,6 @@ python -m py_compile <changed_python_files>
 
 并在交付说明中写明缺失了哪些验证。
 
-### Web 前端改动
-
-适用范围：`apps/dsa-web/`
-
-默认执行：
-
-```bash
-cd apps/dsa-web
-npm ci
-npm run lint
-npm run build
-```
 
 ### 文档改动
 
