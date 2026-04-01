@@ -131,8 +131,94 @@ class StockDaily(Base):
         }
 
 
-
-
+class WatchList(Base):
+    """
+    自选股关注列表
+    
+    记录从妙想同步的自选股及其加入时间
+    用于实现流动池管理（超过3个交易日自动剔除）
+    
+    续命机制：
+    - 当股票涨幅满足强势条件（3%-7%）时，重置计时器
+    - renewed_date 记录最后一次续命时间
+    - renew_count 记录续命次数
+    """
+    __tablename__ = 'watch_list'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # 股票代码
+    code = Column(String(10), nullable=False, index=True)
+    name = Column(String(50))
+    
+    # 加入自选的时间（首次加入）
+    added_date = Column(Date, nullable=False, index=True)
+    
+    # 最后续命时间（涨幅满足条件时更新）
+    renewed_date = Column(Date, index=True)
+    
+    # 续命次数
+    renew_count = Column(Integer, default=0)
+    
+    # 最后更新时间（用于判断是否在最新列表中）
+    last_seen_date = Column(Date, nullable=False, index=True)
+    
+    # 状态：active(在列表中)/removed(已剔除)
+    status = Column(String(20), default='active', index=True)
+    
+    # 移除原因
+    remove_reason = Column(String(100))
+    
+    # 元数据
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    __table_args__ = (
+        UniqueConstraint('code', name='uix_watch_code'),
+        Index('ix_watch_status_date', 'status', 'added_date'),
+    )
+    
+    def __repr__(self):
+        return f"<WatchList(code={self.code}, added={self.added_date}, renewed={self.renewed_date}, status={self.status})>"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'id': self.id,
+            'code': self.code,
+            'name': self.name,
+            'added_date': self.added_date.isoformat() if self.added_date else None,
+            'renewed_date': self.renewed_date.isoformat() if self.renewed_date else None,
+            'renew_count': self.renew_count,
+            'last_seen_date': self.last_seen_date.isoformat() if self.last_seen_date else None,
+            'status': self.status,
+            'remove_reason': self.remove_reason,
+        }
+    
+    def get_effective_date(self) -> date:
+        """获取有效日期（续命日期或加入日期）"""
+        return self.renewed_date or self.added_date
+    
+    def trading_days_since_added(self, trading_dates: List[date]) -> int:
+        """
+        计算已跟踪的交易日天数
+        
+        Args:
+            trading_dates: 交易日列表（从某个起点到今天）
+            
+        Returns:
+            交易日天数
+        """
+        effective_date = self.get_effective_date()
+        if not effective_date:
+            return 0
+        
+        # 计算从有效日期到今天之间的交易日数量
+        count = 0
+        for d in trading_dates:
+            if d > effective_date:
+                count += 1
+        return count
 
 
 class NewsIntel(Base):
