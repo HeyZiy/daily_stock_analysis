@@ -49,9 +49,6 @@ class MXService:
             "apikey": self.api_key
         }
     
-    def is_available(self) -> bool:
-        """检查是否配置了 API Key"""
-        return bool(self.api_key)
     
     def fetch_self_selected(self) -> Tuple[List[str], Dict[str, str]]:
         """
@@ -60,10 +57,6 @@ class MXService:
         Returns:
             (股票代码列表, 代码到名称的映射)
         """
-        if not self.is_available():
-            logger.warning("未配置 MX_APIKEY，无法获取妙想自选股")
-            return [], {}
-        
         url = f"{self.BASE_URL}/self-select/get"
         
         try:

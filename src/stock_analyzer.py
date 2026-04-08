@@ -233,10 +233,10 @@ class StockTrendAnalyzer:
         # 获取最新数据
         latest = df.iloc[-1]
         result.current_price = float(latest['close'])
-        result.ma5 = float(latest['MA5'])
-        result.ma10 = float(latest['MA10'])
-        result.ma20 = float(latest['MA20'])
-        result.ma60 = float(latest.get('MA60', 0))
+        result.ma5 = float(latest['ma5'])
+        result.ma10 = float(latest['ma10'])
+        result.ma20 = float(latest['ma20'])
+        result.ma60 = float(latest.get('ma60', 0))
 
         # 1. 趋势判断
         self._analyze_trend(df, result)
@@ -264,13 +264,13 @@ class StockTrendAnalyzer:
     def _calculate_mas(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算均线"""
         df = df.copy()
-        df['MA5'] = df['close'].rolling(window=5).mean()
-        df['MA10'] = df['close'].rolling(window=10).mean()
-        df['MA20'] = df['close'].rolling(window=20).mean()
+        df['ma5'] = df['close'].rolling(window=5).mean()
+        df['ma10'] = df['close'].rolling(window=10).mean()
+        df['ma20'] = df['close'].rolling(window=20).mean()
         if len(df) >= 60:
-            df['MA60'] = df['close'].rolling(window=60).mean()
+            df['ma60'] = df['close'].rolling(window=60).mean()
         else:
-            df['MA60'] = df['MA20']  # 数据不足时使用 MA20 替代
+            df['ma60'] = df['ma20']  # 数据不足时使用 ma20 替代
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -348,7 +348,7 @@ class StockTrendAnalyzer:
         if ma5 > ma10 > ma20:
             # 检查间距是否在扩大（强势）
             prev = df.iloc[-5] if len(df) >= 5 else df.iloc[-1]
-            prev_spread = (prev['MA5'] - prev['MA20']) / prev['MA20'] * 100 if prev['MA20'] > 0 else 0
+            prev_spread = (prev['ma5'] - prev['ma20']) / prev['ma20'] * 100 if prev['ma20'] > 0 else 0
             curr_spread = (ma5 - ma20) / ma20 * 100 if ma20 > 0 else 0
             
             if curr_spread > prev_spread and curr_spread > 5:
@@ -367,7 +367,7 @@ class StockTrendAnalyzer:
             
         elif ma5 < ma10 < ma20:
             prev = df.iloc[-5] if len(df) >= 5 else df.iloc[-1]
-            prev_spread = (prev['MA20'] - prev['MA5']) / prev['MA5'] * 100 if prev['MA5'] > 0 else 0
+            prev_spread = (prev['ma20'] - prev['ma5']) / prev['ma5'] * 100 if prev['ma5'] > 0 else 0
             curr_spread = (ma20 - ma5) / ma5 * 100 if ma5 > 0 else 0
             
             if curr_spread > prev_spread and curr_spread > 5:

@@ -18,23 +18,23 @@
     python main_simple.py              # 正常运行
     python main_simple.py --debug      # 调试模式
 """
-import os
-import sys
 import argparse
 import logging
-from datetime import date, datetime, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+import os
+import sys
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import List, Dict, Optional, Tuple
 
 import pandas as pd
-import numpy as np
+from sqlalchemy import select, and_, desc
 
-from src.config import get_config, setup_env
-from src.storage import get_db, StockDaily, WatchList
+from data_provider.base import DataFetcherManager, canonical_stock_code
+from src.config import setup_env
 from src.notification import NotificationService
 from src.services.mx_service import MXService
-from data_provider.base import DataFetcherManager, canonical_stock_code
-from sqlalchemy import select, and_, desc
+from src.storage import get_db, WatchList
+from src.stock_analyzer import StockTrendAnalyzer
 
 setup_env()
 
@@ -76,50 +76,27 @@ class SimpleTechnicalAnalyzer:
         self.db = get_db()
         self.fetcher = DataFetcherManager()
         self.mx_service = MXService()
+        self.trend_analyzer = StockTrendAnalyzer()  # 复用 main.py 的技术指标计算
         self._trading_dates_cache = None
     
     def get_trading_dates(self, start_date: date, end_date: date) -> List[date]:
-        """
-        获取交易日列表（使用 Akshare，免费）
-        
-        Args:
-            start_date: 开始日期
-            end_date: 结束日期
-            
-        Returns:
-            交易日列表
-        """
         if self._trading_dates_cache is not None:
-            # 使用缓存
             return [d for d in self._trading_dates_cache if start_date <= d <= end_date]
         
         try:
-            # 使用 Akshare 获取交易日历（免费）
             import akshare as ak
-            
-            # 获取交易日历
             cal_df = ak.tool_trade_date_hist_sina()
-            
-            # 转换为 date 列表
             trading_dates = []
             for _, row in cal_df.iterrows():
                 trade_date = pd.to_datetime(row['trade_date']).date()
                 if start_date <= trade_date <= end_date:
                     trading_dates.append(trade_date)
-            
             self._trading_dates_cache = trading_dates
             return trading_dates
-            
         except Exception as e:
-            logger.warning(f"获取交易日历失败: {e}，使用自然日近似")
-            # 降级：排除周末
-            trading_dates = []
-            current = start_date
-            while current <= end_date:
-                if current.weekday() < 5:  # 周一到周五
-                    trading_dates.append(current)
-                current += timedelta(days=1)
-            return trading_dates
+            # 【修改点】不要再做自然日近似了，直接抛出异常，让主程序报错退出！
+            logger.error(f"严重错误：获取交易日历失败！无法进行后续精确计算。错误信息: {e}")
+            raise RuntimeError("交易日历获取失败。")
     
     def sync_stocks_to_db(self, stock_codes: List[str], name_mapping: Dict[str, str]) -> Tuple[int, int, int]:
         """
@@ -246,26 +223,24 @@ class SimpleTechnicalAnalyzer:
         effective_date = watch_item.get_effective_date()
         
         # 规则1：检查加入自选的交易日天数
-        try:
-            # 获取从有效日期到今天的交易日列表
-            trading_dates = self.get_trading_dates(effective_date, today)
+        # 获取从有效日期到今天的交易日列表
+        trading_dates = self.get_trading_dates(effective_date, today)
+        if not trading_dates:
+            # 无法获取交易日历，跳过此规则（不剔除），但记录警告
+            logger.warning(f"⚠️ {code} 无法获取交易日历，跳过天数检查")
+        else:
             # 排除有效日期当天，只计算之后的天数
             trading_days = len([d for d in trading_dates if d > effective_date])
             
             if trading_days > self.MAX_TRADING_DAYS:
                 return True, f"跟踪超过{self.MAX_TRADING_DAYS}个交易日（已{trading_days}天）"
-        except Exception as e:
-            logger.debug(f"计算 {code} 交易日天数时出错: {e}")
-            # 降级：使用自然日
-            natural_days = (today - effective_date).days
-            if natural_days > 5:  # 自然日超过5天（约等于3个交易日）
-                return True, f"跟踪超过{natural_days}天（自然日）"
         
         # 规则2：收盘跌破10日线
         try:
             df = self.fetch_stock_data(code, days=30)
             if df is not None and len(df) >= 10:
-                df = self.calculate_ma(df)
+                df = df.sort_values('date').reset_index(drop=True)
+                df = self.trend_analyzer._calculate_mas(df)
                 latest = df.iloc[-1]
                 
                 close = latest.get('close')
@@ -311,6 +286,8 @@ class SimpleTechnicalAnalyzer:
         """
         获取股票历史数据
         
+        修复：检查数据新鲜度，如果最新数据早于昨天，强制从网络获取
+        
         Args:
             code: 股票代码
             days: 获取天数
@@ -325,8 +302,34 @@ class SimpleTechnicalAnalyzer:
             
             data = self.db.get_data_range(code, start_date, end_date)
             
-            if len(data) < 20:  # 数据不足，尝试从网络获取
-                logger.debug(f"{code} 本地数据不足，从网络获取...")
+            # 检查数据新鲜度：使用交易日历判断
+            need_refresh = True
+            latest_date = None
+            
+            if data:
+                latest_date = max(d.date for d in data)
+                
+                # 使用交易日历获取最近一个交易日（自动处理周末和节假日）
+                try:
+                    # 获取最近30天的交易日
+                    trading_dates = self.get_trading_dates(end_date - timedelta(days=30), end_date)
+                    if trading_dates:
+                        last_trading_day = trading_dates[-1]  # 最近一个交易日
+                        
+                        # 如果最新数据 >= 最近一个交易日，说明数据是新鲜的
+                        if latest_date >= last_trading_day:
+                            need_refresh = False
+                            logger.debug(f"{code} 本地数据新鲜(最新:{latest_date})，直接使用")
+                        else:
+                            logger.debug(f"{code} 本地数据过期(最新:{latest_date}, 需要:{last_trading_day}+)，从网络获取...")
+                    else:
+                        logger.debug(f"{code} 无法获取交易日历，默认从网络获取...")
+                except Exception as e:
+                    logger.debug(f"{code} 获取交易日历失败({e})，默认从网络获取...")
+            else:
+                logger.debug(f"{code} 本地无数据，从网络获取...")
+            
+            if need_refresh:
                 # 转换日期格式为字符串（某些数据源需要）
                 start_str = start_date.strftime('%Y-%m-%d')
                 end_str = end_date.strftime('%Y-%m-%d')
@@ -336,41 +339,31 @@ class SimpleTechnicalAnalyzer:
                     df = result[0]
                 else:
                     df = result
+                    
                 if df is not None and hasattr(df, 'empty') and not df.empty:
+                    # 验证数据新鲜度：最新数据必须 >= 最近一个交易日
+                    df_latest_date = pd.to_datetime(df['date'].max()).date()
+                    trading_dates = self.get_trading_dates(end_date - timedelta(days=30), end_date)
+                    if trading_dates:
+                        last_trading_day = trading_dates[-1]
+                        if df_latest_date < last_trading_day:
+                            logger.error(f"❌ {code} 网络获取的数据仍过期(最新:{df_latest_date}, 需要:{last_trading_day})，拒绝使用")
+                            return None
+                    
                     # 保存到数据库
                     self.db.save_daily_data(df, code, self.fetcher.__class__.__name__)
                     return df
+                else:
+                    logger.error(f"❌ {code} 从网络获取数据失败，拒绝使用本地过期数据")
+                    return None
             else:
                 # 转换为 DataFrame
                 df = pd.DataFrame([d.to_dict() for d in data])
                 return df
             
-            return None
-            
         except Exception as e:
             logger.warning(f"获取 {code} 数据失败: {e}")
             return None
-    
-    def calculate_ma(self, df: pd.DataFrame) -> pd.DataFrame:
-        """计算移动平均线"""
-        df = df.copy()
-        df = df.sort_values('date')
-        
-        df['ma5'] = df['close'].rolling(window=5).mean()
-        df['ma10'] = df['close'].rolling(window=10).mean()
-        df['ma20'] = df['close'].rolling(window=20).mean()
-        
-        return df
-    
-    def calculate_volume_ratio(self, df: pd.DataFrame) -> pd.DataFrame:
-        """计算量比（当前成交量 / 前5日平均成交量）"""
-        df = df.copy()
-        df = df.sort_values('date')
-        
-        df['volume_ma5'] = df['volume'].rolling(window=5).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma5']
-        
-        return df
     
     def detect_signals(self, code: str, name: str, df: pd.DataFrame) -> List[TechnicalSignal]:
         """
@@ -387,12 +380,15 @@ class SimpleTechnicalAnalyzer:
         """
         signals = []
         
-        if df is None or len(df) < 20:
+        if df is None:
+            logger.warning(f"⚠️ {name}({code}): 数据为空，跳过分析")
             return signals
         
-        # 计算指标
-        df = self.calculate_ma(df)
-        df = self.calculate_volume_ratio(df)
+        if len(df) < 20:
+            logger.warning(f"⚠️ {name}({code}): 数据不足20条(仅{len(df)}条)，可能影响分析准确性")
+        
+        df = df.sort_values('date').reset_index(drop=True)
+        df = self.trend_analyzer._calculate_mas(df)
         
         # 取最新数据
         latest = df.iloc[-1]
@@ -402,7 +398,8 @@ class SimpleTechnicalAnalyzer:
         ma5 = latest['ma5']
         ma10 = latest['ma10']
         ma20 = latest['ma20']
-        volume_ratio = latest.get('volume_ratio', 1.0)
+        _vr = latest.get('volume_ratio')
+        volume_ratio = float(_vr) if _vr is not None and pd.notna(_vr) else 1.0
         
         if pd.isna(ma5) or pd.isna(ma10) or pd.isna(ma20):
             return signals
@@ -454,8 +451,9 @@ class SimpleTechnicalAnalyzer:
             ))
         
         # 信号2: 缩量回踩 MA10（次优买点）
-        # 条件：宽松多头排列 + 环比缩量 + 价格接近MA10 + 小实体
-        elif is_loose_bullish and is_volume_shrink and current_price > ma10 * 0.98 and is_small_body:
+        # 条件：宽松多头排列 + 环比缩量 + 价格在MA10窄幅区间(-2%~+3%) + 小实体
+        # 修复：添加上限防止强势横盘股被误判为回踩MA10
+        elif is_loose_bullish and is_volume_shrink and (ma10 * 0.98 < current_price < ma10 * 1.03) and is_small_body:
             signals.append(TechnicalSignal(
                 code=code,
                 name=name,
@@ -707,7 +705,7 @@ def main():
             return 1
         
         # 2. 同步到本地数据库（记录加入时间，检查续命）
-        added, updated, renewed = analyzer.sync_stocks_to_db(stock_codes, name_mapping)
+        analyzer.sync_stocks_to_db(stock_codes, name_mapping)
         
         # 3. 获取当前活跃的关注列表
         active_watch_list = analyzer.get_active_watch_list()
