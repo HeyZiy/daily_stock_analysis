@@ -519,11 +519,11 @@ class SimpleTechnicalAnalyzer:
                     # 续命条件：涨幅在 3%-7% 之间
                     if self.RENEW_MIN_PCT <= pct_change <= self.RENEW_MAX_PCT:
                         with self.db.session_scope() as session:
-                            # 重新获取最新的 WatchList 记录
+                            # 使用行级锁（FOR UPDATE）避免并发更新冲突
                             updated_item = session.execute(
                                 select(WatchList).where(
                                     WatchList.code == code
-                                )
+                                ).with_for_update()  # 添加行级锁
                             ).scalar_one_or_none()
                             if updated_item:
                                 today = date.today()
