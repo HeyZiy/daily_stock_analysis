@@ -145,24 +145,7 @@ class SimpleTechnicalAnalyzer:
                     if existing.status != 'active':
                         existing.status = 'active'  # 如果之前被移除了，重新激活
                     
-                    # 检查是否满足续命条件（涨幅 3%-7%）
-                    try:
-                        df = self.fetch_stock_data(code, days=5)
-                        if df is not None and len(df) >= 2:
-                            latest = df.iloc[-1]
-                            prev = df.iloc[-2]
-                            
-                            # 计算当日涨幅
-                            pct_change = (latest['close'] - prev['close']) / prev['close'] * 100
-                            
-                            # 续命条件：涨幅在 3%-7% 之间
-                            if self.RENEW_MIN_PCT <= pct_change <= self.RENEW_MAX_PCT:
-                                existing.renewed_date = today
-                                existing.renew_count = (existing.renew_count or 0) + 1
-                                renewed_count += 1
-                                logger.info(f"🔄 {name}({code}) 续命！涨幅 {pct_change:.2f}%，重置计时器（第{existing.renew_count}次续命）")
-                    except Exception as e:
-                        logger.debug(f"检查 {code} 续命条件时出错: {e}")
+                    # 续命检查移到技术分析阶段，避免重复拉取数据
                     
                     updated_count += 1
                     logger.debug(f"更新关注股票: {code}")
@@ -524,6 +507,29 @@ class SimpleTechnicalAnalyzer:
                 df = self.fetch_stock_data(code)
                 if df is None:
                     continue
+                
+                # 检查续命条件（涨幅 3%-7%）
+                if len(df) >= 2:
+                    latest = df.iloc[-1]
+                    prev = df.iloc[-2]
+                    
+                    # 计算当日涨幅
+                    pct_change = (latest['close'] - prev['close']) / prev['close'] * 100
+                    
+                    # 续命条件：涨幅在 3%-7% 之间
+                    if self.RENEW_MIN_PCT <= pct_change <= self.RENEW_MAX_PCT:
+                        with self.db.session_scope() as session:
+                            # 重新获取最新的 WatchList 记录
+                            updated_item = session.execute(
+                                select(WatchList).where(
+                                    WatchList.code == code
+                                )
+                            ).scalar_one_or_none()
+                            if updated_item:
+                                today = date.today()
+                                updated_item.renewed_date = today
+                                updated_item.renew_count = (updated_item.renew_count or 0) + 1
+                                logger.info(f"🔄 {name}({code}) 续命！涨幅 {pct_change:.2f}%，重置计时器（第{updated_item.renew_count}次续命）")
                 
                 # 检测信号
                 signals = self.detect_signals(code, name, df)
