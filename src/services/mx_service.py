@@ -102,12 +102,6 @@ class MXService:
         Returns:
             是否成功
         """
-        if not self.is_available():
-            logger.warning("未配置 MX_APIKEY，无法删除妙想自选股")
-            return False
-        
-        if not codes_to_remove:
-            return True
         
         url = f"{self.BASE_URL}/self-select/manage"
         

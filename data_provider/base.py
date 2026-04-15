@@ -796,6 +796,21 @@ class DataFetcherManager:
                 )
                 
                 if df is not None and not df.empty:
+                    # 检查数据新鲜度：最新日期必须 >= end_date（或最近交易日）
+                    try:
+                        df_latest = pd.to_datetime(df['date'].max()).date()
+                        target_date = pd.to_datetime(end_date).date() if isinstance(end_date, str) else end_date
+                        # 简单判断：如果数据最新日期 < 目标日期，视为过期
+                        if df_latest < target_date:
+                            raise DataFetchError(
+                                f"数据过期(最新:{df_latest}, 需要:{target_date})"
+                            )
+                    except DataFetchError:
+                        raise
+                    except Exception as e:
+                        # 新鲜度检查出错，记录但继续使用数据
+                        logger.debug(f"[{fetcher.name}] 数据新鲜度检查失败: {e}")
+                    
                     elapsed = time.time() - request_start
                     logger.info(
                         f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "

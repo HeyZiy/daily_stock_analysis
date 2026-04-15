@@ -185,7 +185,7 @@ class SimpleTechnicalAnalyzer:
             ).scalars().all()
             return [(r.code, r.remove_reason) for r in results]
     
-    def should_remove_stock(self, watch_item: WatchList) -> Tuple[bool, str]:
+    def should_remove_stock(self, watch_item: WatchList, df: Optional[pd.DataFrame] = None) -> Tuple[bool, str]:
         """
         检查股票是否应该剔除
         
@@ -195,6 +195,7 @@ class SimpleTechnicalAnalyzer:
         
         Args:
             watch_item: WatchList 记录
+            df: 可选，已预先拉取的行情数据；传入则跳过内部拉取，避免重复请求
             
         Returns:
             (是否剔除, 剔除原因)
@@ -220,7 +221,8 @@ class SimpleTechnicalAnalyzer:
         
         # 规则2：收盘跌破10日线
         try:
-            df = self.fetch_stock_data(code, days=30)
+            if df is None:
+                df = self.fetch_stock_data(code, days=30)
             if df is not None and len(df) >= 10:
                 df = df.sort_values('date').reset_index(drop=True)
                 df = self.trend_analyzer._calculate_mas(df)
@@ -496,15 +498,17 @@ class SimpleTechnicalAnalyzer:
             name = watch_item.name or code
             
             try:
-                # Step 1: 检查剔除条件
-                should_remove, remove_reason = self.should_remove_stock(watch_item)
+                # Step 1: 获取数据（供剔除检查和技术分析共用，避免重复拉取）
+                df = self.fetch_stock_data(code)
+                
+                # Step 2: 检查剔除条件（传入已拉取的 df，跳过内部重复请求）
+                should_remove, remove_reason = self.should_remove_stock(watch_item, df=df)
                 if should_remove:
                     removed_stocks.append((code, remove_reason))
                     logger.info(f"❌ 剔除 {name}({code}): {remove_reason}")
                     continue
                 
-                # Step 2: 获取数据并进行技术分析
-                df = self.fetch_stock_data(code)
+                # Step 3: 获取数据并进行技术分析
                 if df is None:
                     continue
                 
