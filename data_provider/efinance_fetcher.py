@@ -99,7 +99,6 @@ def _get_session() -> requests.Session:
                 _session.mount('http://', adapter)
     return _session
 
-from patch.eastmoney_patch import eastmoney_patch
 from src.config import get_config
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
 from .realtime_types import (
@@ -317,9 +316,6 @@ class EfinanceFetcher(BaseFetcher):
         self._last_request_time: Optional[float] = None
         self._consecutive_errors: int = 0  # 连续错误计数，用于自适应流控
         self._error_reset_time: Optional[float] = None  # 错误计数重置时间
-        # 东财补丁开启才执行打补丁操作
-        if get_config().enable_eastmoney_patch:
-            eastmoney_patch()
 
     @staticmethod
     def _build_history_failure_message(
