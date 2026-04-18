@@ -81,3 +81,6 @@ static/
 
 
 .workbuddy/
+/.codebuddy/automations/automation/memory.md
+/.codebuddy/automations/automation-2/memory.md
+/trading_plan.json
