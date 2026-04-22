@@ -8,22 +8,29 @@
 1. 读取妙想自选股，同步到本地数据库
 2. 纯技术分析（缩量回踩 MA5 等规则）
 3. 找出符合条件的股票，发送通知
+4. 模拟交易执行（基于技术信号的自动化交易）
 
 特点：
 - 不调用 LLM，节省 API 额度
 - 纯本地计算，速度快
 - 规则明确，可回测验证
+- 集成模拟交易功能
 
 使用方式：
     python main_simple.py              # 正常运行
     python main_simple.py --debug      # 调试模式
+    python main_simple.py --trade       # 分析+生成交易计划
+    python main_simple.py --trade-execute  # 执行盘中交易
+    python main_simple.py --trade-plan  # 查看当前交易计划
 """
 import argparse
+import io
+import json
 import logging
 import os
 import sys
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, asdict
+from datetime import date, datetime, timedelta, time
 from typing import List, Dict, Optional, Tuple
 
 import pandas as pd
@@ -35,6 +42,9 @@ from src.notification import NotificationService
 from src.services.mx_service import MXService
 from src.storage import get_db, WatchList
 from src.stock_analyzer import StockTrendAnalyzer
+
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 setup_env()
 
@@ -656,31 +666,713 @@ class SimpleTechnicalAnalyzer:
         return "\n".join(lines)
 
 
+@dataclass
+class BuyCondition:
+    """买入条件检查结果"""
+    passed: bool
+    reason: str
+    buy_zone: Optional[Tuple[float, float]] = None
+
+
+@dataclass
+class SellCondition:
+    """卖出条件检查结果"""
+    should_sell: bool
+    reason: str
+    sell_price: Optional[float] = None
+    sell_ratio: float = 1.0
+
+
+class TradeDecisionHelper:
+    """
+    基于《技术分析日报·次日实战交易手册》的决策辅助
+    """
+
+    MARKET_OPEN = time(9, 30)
+    MORNING_END = time(11, 30)
+    AFTERNOON_START = time(13, 0)
+    MARKET_CLOSE = time(15, 0)
+
+    BEST_BUY_START = time(9, 40)
+    BEST_BUY_END = time(10, 0)
+    SAFE_BUY_START = time(14, 30)
+
+    MAX_SINGLE_POSITION = 0.30
+    MAX_HOLDINGS = 2
+    STOP_LOSS_MA10 = True
+
+    def __init__(self):
+        self.signals: List[Dict] = []
+
+    def load_signals(self, signals: List[TechnicalSignal]):
+        """加载技术分析信号"""
+        self.signals = []
+        for s in signals:
+            if s.signal_type == 'pullback_ma5' and s.score >= 80:
+                self.signals.append({
+                    'code': s.code,
+                    'name': s.name,
+                    'score': s.score,
+                    'current_price': s.current_price,
+                    'ma5': s.ma5,
+                    'ma10': s.ma10,
+                    'ma20': s.ma20,
+                })
+        logger.info(f"加载 {len(self.signals)} 个高优先级买入信号")
+
+    def get_buy_candidates(self) -> List[Dict]:
+        """获取买入候选列表（只做缩量回踩MA5，评分≥80）"""
+        return [s for s in self.signals if s.get('score', 0) >= 80]
+
+    def check_buy_conditions(self,
+                           signal: Dict,
+                           current_price: float,
+                           current_volume_ratio: float,
+                           current_time: datetime,
+                           market_status: Dict) -> BuyCondition:
+        """检查3个必须买入条件"""
+        ma10 = signal.get('ma10')
+        ma5 = signal.get('ma5')
+
+        if current_price < ma10 * 0.995:
+            return BuyCondition(
+                passed=False,
+                reason=f"跌破MA10生命线(当前{current_price:.2f} < MA10:{ma10:.2f})"
+            )
+
+        if current_volume_ratio > 1.0:
+            return BuyCondition(
+                passed=False,
+                reason=f"放量({current_volume_ratio:.2f} > 1.0)，非缩量洗盘"
+            )
+
+        prev_close = signal.get('current_price', current_price)
+        change_pct = (current_price - prev_close) / prev_close * 100
+        if abs(change_pct) > 3:
+            return BuyCondition(
+                passed=False,
+                reason=f"涨跌幅过大({change_pct:+.2f}%)，超出±3%范围"
+            )
+
+        buy_zone = (ma10 * 0.998, ma5 * 1.002) if ma10 and ma5 else None
+
+        return BuyCondition(
+            passed=True,
+            reason="满足所有买入条件",
+            buy_zone=buy_zone
+        )
+
+    def check_time_window(self, current_time: datetime) -> Tuple[bool, str]:
+        """检查是否在允许买入的时间窗口"""
+        t = current_time.time()
+
+        if self.BEST_BUY_START <= t <= self.BEST_BUY_END:
+            return True, "激进买入窗口(9:40-10:00)"
+
+        if self.SAFE_BUY_START <= t <= self.MARKET_CLOSE:
+            return True, "稳健买入窗口(14:30-15:00)"
+
+        if time(9, 25) <= t < time(9, 30):
+            return False, "集合竞价时段，禁止买入"
+
+        return False, f"非最佳买入时段({t.strftime('%H:%M')})"
+
+    def check_risk_conditions(self,
+                            market_index_change: float,
+                            has_bad_news: bool,
+                            holdings_count: int) -> Tuple[bool, str]:
+        """检查风险放弃条件"""
+        if market_index_change < -2:
+            return False, f"系统性风险(大盘跌{market_index_change:.2f}%)"
+
+        if has_bad_news:
+            return False, "个股突发利空"
+
+        if holdings_count >= self.MAX_HOLDINGS:
+            return False, f"持仓已达上限({holdings_count}/{self.MAX_HOLDINGS})"
+
+        return True, "风险检查通过"
+
+    def check_sell_conditions(self,
+                            position: Dict,
+                            current_price: float,
+                            ma10: float,
+                            ma5: float,
+                            cost_price: float) -> SellCondition:
+        """检查卖出条件"""
+        profit_pct = (current_price - cost_price) / cost_price * 100
+
+        if current_price < ma10 * 0.995:
+            return SellCondition(
+                should_sell=True,
+                reason=f"止损：跌破MA10生命线({current_price:.2f} < {ma10:.2f})",
+                sell_price=ma10,
+                sell_ratio=1.0
+            )
+
+        if 3 <= profit_pct < 7:
+            return SellCondition(
+                should_sell=True,
+                reason=f"第一止盈：盈利{profit_pct:.2f}%，减仓50%",
+                sell_ratio=0.5
+            )
+
+        if profit_pct >= 7:
+            return SellCondition(
+                should_sell=True,
+                reason=f"第二止盈：盈利{profit_pct:.2f}%，清仓",
+                sell_ratio=1.0
+            )
+
+        if current_price < ma5 * 0.998:
+            return SellCondition(
+                should_sell=True,
+                reason=f"趋势走弱：跌破MA5({current_price:.2f} < {ma5:.2f})",
+                sell_ratio=0.5
+            )
+
+        return SellCondition(should_sell=False, reason="持仓中")
+
+    def calculate_position_size(self,
+                              available_funds: float,
+                              current_price: float) -> int:
+        """计算买入数量"""
+        max_invest = available_funds * self.MAX_SINGLE_POSITION
+        max_shares = int(max_invest / current_price / 100) * 100
+
+        if max_shares < 100:
+            logger.warning(f"资金不足，最小买入单位为100股")
+            return 0
+
+        return max_shares
+
+    def generate_daily_plan(self) -> str:
+        """生成次日交易计划文本"""
+        candidates = self.get_buy_candidates()
+
+        if not candidates:
+            return "📋 次日交易计划\n\n暂无符合条件的买入信号"
+
+        lines = ["📋 次日交易计划", "=" * 40]
+
+        for sig in candidates:
+            code = sig['code']
+            name = sig['name']
+            ma5 = sig.get('ma5', 0)
+            ma10 = sig.get('ma10', 0)
+
+            lines.append(f"\n🎯 {name}({code}) 评分:{sig['score']}")
+            lines.append(f"   买入区间: {ma10:.2f} ~ {ma5:.2f}")
+            lines.append(f"   买入条件: ①不跌破MA10 ②量比≤1.0 ③涨跌幅±3%内")
+            lines.append(f"   最佳时间: 9:40-10:00 或 14:30-15:00")
+            lines.append(f"   止损位: MA10={ma10:.2f}")
+
+        lines.append(f"\n⚠️ 放弃条件: 大盘跌超2% | 个股利空 | 持仓≥{self.MAX_HOLDINGS}只")
+
+        return "\n".join(lines)
+
+
+class SimulatedPortfolio:
+    """
+    mx-moni投资组合管理器封装
+    封装trading.portfolio_manager.PortfolioManager，提供统一的接口
+    """
+
+    def __init__(self, api_key: Optional[str] = None):
+        from trading.portfolio_manager import PortfolioManager, Position, Order
+        self._pm = PortfolioManager(api_key=api_key)
+        self._positions_cache: List[Dict] = []
+        self._orders_cache: List[Dict] = []
+
+    def get_positions(self) -> List[Dict]:
+        """获取当前持仓"""
+        try:
+            positions = self._pm.get_positions()
+            self._positions_cache = [
+                {
+                    'code': p.code,
+                    'name': p.name,
+                    'volume': p.volume,
+                    'cost_price': p.cost_price,
+                    'current_price': p.current_price,
+                }
+                for p in positions
+            ]
+        except Exception as e:
+            logger.warning(f"获取持仓失败: {e}, 使用缓存")
+        return self._positions_cache
+
+    def get_funds(self) -> Dict:
+        """获取资金信息"""
+        try:
+            funds = self._pm.get_funds()
+            return {
+                'available': funds.get('available', 0.0),
+                'total': funds.get('total', 0.0),
+            }
+        except Exception as e:
+            logger.warning(f"获取资金失败: {e}")
+            return {'available': 0.0, 'total': 0.0}
+
+    def get_orders(self) -> List[Dict]:
+        """获取当日委托"""
+        try:
+            orders = self._pm.get_orders()
+            self._orders_cache = [
+                {
+                    'order_id': o.order_id,
+                    'code': o.code,
+                    'name': o.name,
+                    'direction': o.direction,
+                    'price': o.price,
+                    'volume': o.volume,
+                    'status': o.status,
+                }
+                for o in orders
+            ]
+        except Exception as e:
+            logger.warning(f"获取委托失败: {e}, 使用缓存")
+        return self._orders_cache
+
+    def buy(self, code: str, name: str, price: float, volume: int) -> Dict:
+        """买入股票"""
+        try:
+            result = self._pm.buy(code, price, volume)
+            if result.get('success'):
+                logger.info(f"✅ 买入成功: {name}({code}) {volume}股 @{price}")
+            else:
+                logger.warning(f"❌ 买入失败: {name}({code}) - {result.get('error')}")
+            return result
+        except Exception as e:
+            logger.error(f"买入异常: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def sell(self, code: str, price: float, volume: int) -> Dict:
+        """卖出股票"""
+        try:
+            result = self._pm.sell(code, price, volume)
+            if result.get('success'):
+                logger.info(f"✅ 卖出成功: {code} {volume}股 @{price}")
+            else:
+                logger.warning(f"❌ 卖出失败: {code} - {result.get('error')}")
+            return result
+        except Exception as e:
+            logger.error(f"卖出异常: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def cancel_all_orders(self) -> Dict:
+        """撤销所有委托"""
+        try:
+            result = self._pm.cancel_all_orders()
+            logger.info(f"一键撤单完成")
+            return result
+        except Exception as e:
+            logger.error(f"撤单异常: {e}")
+            return {'success': False, 'error': str(e)}
+
+
+class TradingExecutor:
+    """
+    模拟交易执行器
+
+    职责：
+    1. 盘后分析技术分析信号，生成次日交易计划
+    2. 盘中监控市场，执行买入/卖出
+    """
+
+    def __init__(self,
+                 portfolio: Optional[SimulatedPortfolio] = None,
+                 plan_file: str = 'trading_plan.json'):
+        self.decision_helper = TradeDecisionHelper()
+        self.portfolio = portfolio or SimulatedPortfolio()
+        self.plan_file = plan_file
+        self.trading_plan: Optional[Dict] = None
+
+    def analyze_after_market(self, signals: List[TechnicalSignal]) -> str:
+        """
+        盘后分析 - 生成次日交易计划
+        """
+        logger.info("开始盘后分析...")
+
+        self.decision_helper.load_signals(signals)
+
+        positions = self.portfolio.get_positions()
+        funds = self.portfolio.get_funds()
+
+        plan = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'candidates': self.decision_helper.get_buy_candidates(),
+            'holdings': [{'code': p['code'], 'name': p['name'], 'volume': p['volume']} for p in positions],
+            'funds': funds,
+            'created_at': datetime.now().isoformat()
+        }
+
+        self._save_plan(plan)
+        self.trading_plan = plan
+
+        report = self.decision_helper.generate_daily_plan()
+        logger.info(f"盘后分析完成，{len(plan['candidates'])} 个买入候选")
+        return report
+
+    def execute_buy(self,
+                   code: str,
+                   name: str,
+                   current_price: float,
+                   volume_ratio: float,
+                   market_status: Dict) -> Optional[Dict]:
+        """执行买入检查并下单"""
+        now = datetime.now()
+
+        can_buy, time_msg = self.decision_helper.check_time_window(now)
+        if not can_buy:
+            logger.info(f"{code} {time_msg}")
+            return None
+
+        market_change = market_status.get('index_change', 0)
+        holdings_count = len(self.portfolio.get_positions())
+
+        can_trade, risk_msg = self.decision_helper.check_risk_conditions(
+            market_change,
+            has_bad_news=False,
+            holdings_count=holdings_count
+        )
+        if not can_trade:
+            logger.info(f"{code} 风险检查未通过: {risk_msg}")
+            return None
+
+        signal = None
+        for s in self.trading_plan.get('candidates', []):
+            if s['code'] == code:
+                signal = s
+                break
+
+        if not signal:
+            logger.warning(f"{code} 不在交易计划中")
+            return None
+
+        condition = self.decision_helper.check_buy_conditions(
+            signal, current_price, volume_ratio, now, market_status
+        )
+
+        if not condition.passed:
+            logger.info(f"{code} 买入条件未通过: {condition.reason}")
+            return None
+
+        if condition.buy_zone:
+            lower, upper = condition.buy_zone
+            if not (lower <= current_price <= upper):
+                logger.info(f"{code} 当前价{current_price}不在买入区间[{lower:.2f}, {upper:.2f}]")
+                return None
+
+        funds = self.portfolio.get_funds()
+        available = funds.get('available', 0)
+        volume = self.decision_helper.calculate_position_size(available, current_price)
+
+        if volume < 100:
+            logger.warning(f"{code} 资金不足以买入")
+            return None
+
+        result = self.portfolio.buy(code, name, current_price, volume)
+        return result
+
+    def check_and_sell(self, position_code: str,
+                      current_price: float,
+                      current_ma5: float,
+                      current_ma10: float) -> Optional[Dict]:
+        """检查持仓卖出条件并执行"""
+        positions = self.portfolio.get_positions()
+        position = None
+        for p in positions:
+            if p['code'] == position_code:
+                position = p
+                break
+
+        if not position:
+            return None
+
+        sell_condition = self.decision_helper.check_sell_conditions(
+            position, current_price, current_ma10, current_ma5, position['cost_price']
+        )
+
+        if not sell_condition.should_sell:
+            return None
+
+        sell_volume = int(position['volume'] * sell_condition.sell_ratio / 100) * 100
+        if sell_volume < 100:
+            sell_volume = position['volume']
+
+        logger.info(f"{position_code} 执行卖出: {sell_volume}股 - {sell_condition.reason}")
+
+        result = self.portfolio.sell(position_code, current_price, sell_volume)
+        return result
+
+    def cancel_pending_orders(self):
+        """撤销所有未成交委托"""
+        self.portfolio.cancel_all_orders()
+
+    def _save_plan(self, plan: Dict):
+        """保存交易计划到文件"""
+        with open(self.plan_file, 'w', encoding='utf-8') as f:
+            json.dump(plan, f, ensure_ascii=False, indent=2)
+        logger.info(f"交易计划已保存: {self.plan_file}")
+
+    def load_plan(self) -> Optional[Dict]:
+        """从文件加载交易计划"""
+        if os.path.exists(self.plan_file):
+            with open(self.plan_file, 'r', encoding='utf-8') as f:
+                self.trading_plan = json.load(f)
+            return self.trading_plan
+        return None
+
+
+def _get_realtime_data(code: str) -> Optional[Dict]:
+    """获取单只股票实时行情"""
+    try:
+        import akshare as ak
+
+        df = ak.stock_zh_a_spot_em()
+        row = df[df['代码'] == code]
+
+        if row.empty:
+            for suffix in ['SH', 'SZ', 'BJ']:
+                full_code = f"{code}.{suffix}"
+                row = df[df['代码'] == code]
+                if not row.empty:
+                    break
+
+        if row.empty:
+            logger.warning(f"获取 {code} 实时行情失败")
+            return None
+
+        row = row.iloc[0]
+
+        ma5, ma10 = None, None
+        try:
+            hist = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=(datetime.now() - timedelta(days=30)).strftime('%Y%m%d'),
+                end_date=datetime.now().strftime('%Y%m%d')
+            )
+            if hist is not None and len(hist) >= 10:
+                ma5 = hist['收盘'].iloc[-5:].mean()
+                ma10 = hist['收盘'].iloc[-10:].mean()
+        except Exception as e:
+            logger.debug(f"获取 {code} 历史数据失败: {e}")
+
+        change_pct = float(row.get('涨跌幅', 0))
+
+        return {
+            'price': float(row.get('最新价', 0)),
+            'volume_ratio': float(row.get('量比', 1.0)),
+            'ma5': ma5,
+            'ma10': ma10,
+            'change_pct': change_pct,
+        }
+
+    except Exception as e:
+        logger.error(f"获取 {code} 实时数据异常: {e}")
+        return None
+
+
+def show_trade_plan(plan_file: str = 'trading_plan.json'):
+    """显示当前交易计划"""
+    if not os.path.exists(plan_file):
+        print("暂无交易计划，请先运行 --trade")
+        return
+
+    with open(plan_file, 'r', encoding='utf-8') as f:
+        plan = json.load(f)
+
+    print(f"\n{'='*50}")
+    print(f"📅 交易日期: {plan['date']}")
+    print(f"{'='*50}")
+
+    candidates = plan.get('candidates', [])
+    holdings = plan.get('holdings', [])
+    funds = plan.get('funds', {})
+
+    if candidates:
+        print(f"\n🎯 买入候选 ({len(candidates)} 只):")
+        for s in candidates:
+            ma5 = s.get('ma5', '-')
+            ma10 = s.get('ma10', '-')
+            print(f"   {s['name']}({s['code']}) 评分:{s['score']} MA5:{ma5} MA10:{ma10}")
+    else:
+        print("\n🎯 买入候选: 无")
+
+    if holdings:
+        print(f"\n💼 当前持仓 ({len(holdings)} 只):")
+        for h in holdings:
+            print(f"   {h['name']}({h['code']}) {h['volume']}股")
+    else:
+        print("\n💼 当前持仓: 空仓")
+
+    print(f"\n💰 可用资金: {funds.get('available', '未知')}")
+
+
+def run_trade_analysis():
+    """盘后分析模式"""
+    analyzer = SimpleTechnicalAnalyzer()
+
+    stock_codes, name_mapping = analyzer.mx_service.fetch_self_selected()
+    if not stock_codes:
+        return "今日无符合条件的信号"
+
+    analyzer.sync_stocks_to_db(stock_codes, name_mapping)
+
+    active_watch_list = analyzer.get_active_watch_list()
+    if not active_watch_list:
+        return "今日无符合条件的信号"
+
+    signals, removed_stocks = analyzer.analyze_all_stocks(active_watch_list)
+
+    if removed_stocks:
+        analyzer.remove_stocks(removed_stocks)
+
+    if not signals:
+        return "今日无符合条件的信号"
+
+    executor = TradingExecutor()
+    report = executor.analyze_after_market(signals)
+
+    return report
+
+
+def run_trade_execute():
+    """盘中执行模式"""
+    now = datetime.now()
+    t = now.time()
+
+    if not (time(9, 25) <= t <= time(15, 0)):
+        logger.info(f"非交易时间({t.strftime('%H:%M')}), 跳过")
+        return "非交易时间，跳过执行"
+
+    executor = TradingExecutor()
+    plan = executor.load_plan()
+
+    if not plan:
+        logger.warning("无交易计划")
+        return "无交易计划，请先运行 --trade"
+
+    logger.info(f"加载交易计划: {plan.get('date')}")
+    results = []
+
+    positions = executor.portfolio.get_positions()
+    if positions:
+        logger.info(f"开始检查 {len(positions)} 个持仓的止损止盈...")
+        for pos in positions:
+            rt = _get_realtime_data(pos['code'])
+
+            if rt is None or rt['ma10'] is None:
+                logger.warning(f"{pos['name']}({pos['code']}) 获取实时数据失败，跳过卖出检查")
+                continue
+
+            sell_result = executor.check_and_sell(
+                position_code=pos['code'],
+                current_price=rt['price'],
+                current_ma5=rt['ma5'] if rt['ma5'] else rt['price'],
+                current_ma10=rt['ma10']
+            )
+
+            if sell_result:
+                action = f"🔴 卖出 {pos['name']}({pos['code']}): {sell_result}"
+                logger.info(action)
+                results.append(action)
+            else:
+                logger.debug(f"{pos['name']}({pos['code']}) 持仓正常，无需操作")
+    else:
+        logger.info("当前无持仓")
+        results.append("💼 当前空仓，无卖出操作")
+
+    candidates = plan.get('candidates', [])
+    if not candidates:
+        logger.info("无买入候选")
+        results.append("🎯 今日无买入候选")
+    else:
+        logger.info(f"开始检查 {len(candidates)} 个买入候选...")
+        market_status = {
+            'index_change': 0,
+            'market_open': True,
+            'is_near_close': t >= time(14, 30),
+        }
+
+        for candidate in candidates:
+            code = candidate['code']
+            name = candidate.get('name', code)
+
+            rt = _get_realtime_data(code)
+
+            if rt is None:
+                logger.warning(f"{name}({code}) 获取实时数据失败，跳过")
+                continue
+
+            buy_result = executor.execute_buy(
+                code=code,
+                name=name,
+                current_price=rt['price'],
+                volume_ratio=rt['volume_ratio'],
+                market_status=market_status
+            )
+
+            if buy_result:
+                action = f"🟢 买入 {name}({code}): {buy_result}"
+                logger.info(action)
+                results.append(action)
+            else:
+                logger.info(f"{name}({code}) 未满足买入条件，跳过")
+
+    if t >= time(14, 50):
+        try:
+            executor.cancel_pending_orders()
+            results.append("🧹 收盘前委托已清理")
+        except Exception as e:
+            logger.warning(f"清理委托失败: {e}")
+
+    return "\n".join(results) if results else "✅ 所有持仓正常，无买卖操作"
+
+
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description='简化版趋势跟踪系统 - 无 LLM',
+        description='简化版趋势跟踪系统 - 无 LLM（集成模拟交易）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
+
     parser.add_argument(
         '--debug',
         action='store_true',
         help='启用调试模式'
     )
-    
+
     parser.add_argument(
         '--no-notify',
         action='store_true',
         help='不发送推送通知'
     )
-    
+
     parser.add_argument(
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖妙想自选股）'
     )
-    
+
+    trade_group = parser.add_argument_group('交易模式（可选）')
+    trade_group.add_argument(
+        '--trade',
+        action='store_true',
+        help='盘后分析模式：分析技术信号并生成次日交易计划'
+    )
+    trade_group.add_argument(
+        '--trade-execute',
+        action='store_true',
+        help='盘中执行模式：检查持仓止损止盈，执行买入'
+    )
+    trade_group.add_argument(
+        '--trade-plan',
+        action='store_true',
+        help='查看当前交易计划'
+    )
+
     return parser.parse_args()
 
 

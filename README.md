@@ -1,14 +1,12 @@
-# 📈 个人股票智能分析助手
+# 📈 A股自选股智能分析系统
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > 🤖 基于 AI 大模型的个人自选股每日自动分析工具
-> 
-> 每日定时分析自选股，推送「决策仪表盘」到飞书/钉钉/Discord/邮箱
 >
-> 本项目基于 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 简化定制，保留核心分析功能，移除 WebUI 和复杂配置，专注于个人每日自动分析场景。
+> 每日定时分析自选股，通过邮件推送「决策仪表盘」
 
 ---
 
@@ -19,14 +17,14 @@
 | **AI 分析** | 一句话核心结论 + 买卖点位 + 操作检查清单 |
 | **多维度** | 技术面 + 筹码分布 + 舆情情报 + 实时行情 |
 | **多市场** | A股、港股、美股 |
-| **自动推送** | 每日定时分析，多渠道推送 |
+| **自动推送** | 每日定时分析，邮件通知 |
 | **零成本** | GitHub Actions 免费运行，无需服务器 |
 
 ---
 
 ## 🚀 快速开始
 
-### 方式：GitHub Actions（推荐）
+### 方式一：GitHub Actions（推荐）
 
 > 5 分钟完成部署，零成本，无需服务器。
 
@@ -45,14 +43,11 @@
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 免费 Key | ✅ 推荐 |
 | `DEEPSEEK_API_KEY` | [DeepSeek](https://platform.deepseek.com/) Key（作为 fallback） | 可选 |
 
-**通知渠道（至少配置一个）**
+**通知渠道**
 
 | Secret 名称 | 说明 |
 |------------|------|
-| `FEISHU_WEBHOOK_URL` | 飞书 Webhook URL |
-| `DINGTALK_WEBHOOK_URL` | 钉钉 Webhook URL |
-| `DISCORD_WEBHOOK_URL` | Discord Webhook URL |
-| `EMAIL_SENDER` / `EMAIL_PASSWORD` / `EMAIL_RECEIVERS` | 邮件通知 |
+| `EMAIL_SENDER` / `EMAIL_PASSWORD` / `EMAIL_RECEIVERS` | 邮件通知（必填） |
 
 **自选股配置**
 
@@ -70,56 +65,7 @@
 
 ---
 
-## ⚙️ 配置说明
-
-### 环境变量（.env）
-
-```bash
-# AI 模型
-GEMINI_API_KEY=your_gemini_key
-DEEPSEEK_API_KEY=your_deepseek_key  # 可选，作为 fallback
-
-# 自选股
-STOCK_LIST=600519,000858,hk00700,AAPL
-
-# 通知渠道（配置你需要的）
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-```
-
-### 股票代码格式
-
-| 市场 | 格式 | 示例 |
-|------|------|------|
-| A股 | 6位数字 | `600519`, `000858` |
-| 港股 | hk+5位数字 | `hk00700`, `hk09988` |
-| 美股 | 字母代码 | `AAPL`, `TSLA` |
-
----
-
-## 📝 工作原理
-
-```
-GitHub Actions 定时触发（默认工作日 18:00）
-        ↓
-获取自选股列表
-        ↓
-对每只股票：
-  ├─ 获取实时行情
-  ├─ 获取历史数据
-  ├─ 获取新闻舆情
-  └─ LLM 分析生成报告
-        ↓
-推送到配置的渠道
-```
-
-### AI 模型优先级
-
-1. **Gemini**（主模型）
-2. **DeepSeek**（fallback，当 Gemini 额度耗尽时自动切换）
-
----
-
-## 🔧 本地运行
+### 方式二：本地运行
 
 ```bash
 # 克隆项目
@@ -135,13 +81,69 @@ cp .env.example .env
 
 # 运行分析
 python main.py
+
+# 定时任务模式
+python main.py --schedule
 ```
+
+---
+
+## ⚙️ 配置说明
+
+### 环境变量（.env）
+
+```bash
+# AI 模型
+GEMINI_API_KEY=your_gemini_key
+DEEPSEEK_API_KEY=your_deepseek_key  # 可选，作为 fallback
+
+# 自选股
+STOCK_LIST=600519,000858,hk00700,AAPL
+
+# 邮件通知
+EMAIL_SENDER=your_email@example.com
+EMAIL_PASSWORD=your_password
+EMAIL_RECEIVERS=receiver1@example.com,receiver2@example.com
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+```
+
+### 股票代码格式
+
+| 市场 | 格式 | 示例 |
+|------|------|------|
+| A股 | 6位数字 | `600519`, `000858` |
+| 港股 | hk+5位数字 | `hk00700`, `hk09988` |
+| 美股 | 字母代码 | `AAPL`, `TSLA` |
+
+---
+
+## 📝 工作原理
+
+```
+定时任务触发（默认工作日 18:00）
+        ↓
+获取自选股列表
+        ↓
+对每只股票：
+  ├─ 获取实时行情
+  ├─ 获取历史数据
+  ├─ 获取新闻舆情
+  └─ LLM 分析生成报告
+        ↓
+邮件推送分析结果
+```
+
+### AI 模型优先级
+
+1. **Gemini**（主模型）
+2. **DeepSeek**（fallback，当 Gemini 额度耗尽时自动切换）
 
 ---
 
 ## 📊 推送效果
 
-每日推送包含：
+每日邮件推送包含：
 - 📌 **核心结论**：买入/观望/卖出建议
 - 📈 **技术信号**：均线排列、支撑压力位
 - 🎯 **精确点位**：买入价、止损价、目标价
@@ -163,11 +165,9 @@ python main.py
 
 ---
 
-## 📄 License & 致谢
+## 📄 License
 
-本项目基于 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 进行简化定制，遵循原项目的 [MIT License](LICENSE)。
-
-感谢原作者 ZhuLinsen 的开源贡献。
+本项目基于 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 进行定制，遵循原项目的 [MIT License](LICENSE)。
 
 ---
 

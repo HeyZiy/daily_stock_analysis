@@ -14,7 +14,7 @@ import logging
 import time
 from typing import Dict, Optional, Set
 
-from src.data.stock_mapping import STOCK_NAME_MAP
+
 from src.services.stock_code_utils import is_code_like, normalize_code
 
 logger = logging.getLogger(__name__)
@@ -105,11 +105,9 @@ def resolve_name_to_code(name: str) -> Optional[str]:
 
     Strategy (in order):
     1. If input looks like a code (5-6 digits or 1-5 letters), return it normalized.
-    2. Local STOCK_NAME_MAP reverse (exclude ambiguous names).
-    3. Pinyin match against local names.
-    4. AkShare online fallback (A-shares).
-    5. Fuzzy match (difflib).
-    6. Return None.
+    2. AkShare online fallback (A-shares).
+    3. Fuzzy match (difflib).
+    4. Return None.
 
     Args:
         name: Stock name or code string.
@@ -127,44 +125,19 @@ def resolve_name_to_code(name: str) -> Optional[str]:
     if _is_code_like(s):
         return _normalize_code(s)
 
-    # 2. Local reverse map (no duplicates)
-    local_reverse = _build_reverse_map_no_duplicates(STOCK_NAME_MAP)
-    if s in local_reverse:
-        return local_reverse[s]
-
-    # 3. Pinyin match (exact)
-    try:
-        from pypinyin import lazy_pinyin
-
-        input_pinyin = "".join(lazy_pinyin(s)).lower()
-        for local_name, code in local_reverse.items():
-            local_pinyin = "".join(lazy_pinyin(local_name)).lower()
-            if input_pinyin == local_pinyin:
-                return code
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.debug(f"[NameResolver] Pinyin match failed: {e}")
-
-    # 4. AkShare fallback
+    # 2. AkShare fallback
     akshare_map = _get_akshare_name_to_code()
     if akshare_map and s in akshare_map:
         logger.debug(f"[NameResolver] 命中 AkShare 映射: {s} -> {akshare_map[s]}")
         return akshare_map[s]
 
-    # 5. Fuzzy match (local + akshare, local takes precedence)
-    all_name_to_code = dict(local_reverse)
-    if akshare_map:
-        all_name_to_code.update(akshare_map)
-    # Skip fuzzy matching for very short inputs (<=2 chars) to avoid false positives,
-    # e.g. '中国' matching arbitrary company names in a pool of 5000+ stocks.
-    # Use a higher cutoff (0.8) to reduce mis-hits on longer inputs as well.
-    if len(s) > 2:
-        names = list(all_name_to_code.keys())
+    # 3. Fuzzy match (akshare)
+    if akshare_map and len(s) > 2:
+        names = list(akshare_map.keys())
         matches = difflib.get_close_matches(s, names, n=1, cutoff=0.8)
         if matches:
             logger.debug(f"[NameResolver] 命中模糊匹配: input={s}, matched={matches[0]}")
-            return all_name_to_code[matches[0]]
+            return akshare_map[matches[0]]
 
         # Conservative fallback for one-character typo in medium/long names.
         # This keeps the strict default threshold while fixing obvious misspellings
@@ -172,7 +145,7 @@ def resolve_name_to_code(name: str) -> Optional[str]:
         typo_matches = difflib.get_close_matches(s, names, n=1, cutoff=0.7)
         if typo_matches and _is_single_char_typo(s, typo_matches[0]):
             logger.debug(f"[NameResolver] 命中单字误写兜底: input={s}, matched={typo_matches[0]}")
-            return all_name_to_code[typo_matches[0]]
+            return akshare_map[typo_matches[0]]
 
     logger.debug(f"[NameResolver] 解析失败: {s}")
     return None

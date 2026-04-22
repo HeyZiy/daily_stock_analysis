@@ -24,8 +24,38 @@ from typing import Callable, Optional, List, Tuple, Dict, Any
 
 import pandas as pd
 import numpy as np
-from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from .fundamental_adapter import AkshareFundamentalAdapter
+
+def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
+    """Return whether a stock name is useful for display or caching."""
+    if not name:
+        return False
+
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        return False
+
+    normalized_code = (stock_code or "").strip().upper()
+    if normalized_name.upper() == normalized_code:
+        return False
+
+    if normalized_name.startswith("股票"):
+        return False
+
+    placeholder_values = {
+        "N/A",
+        "NA",
+        "NONE",
+        "NULL",
+        "--",
+        "-",
+        "UNKNOWN",
+        "TICKER",
+    }
+    if normalized_name.upper() in placeholder_values:
+        return False
+
+    return True
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -1215,7 +1245,6 @@ class DataFetcherManager:
         """
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
-        static_name = STOCK_NAME_MAP.get(stock_code)
 
         # 1. 先检查缓存
         if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
@@ -1233,10 +1262,6 @@ class DataFetcherManager:
                 self._stock_name_cache[stock_code] = name
                 logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
                 return name
-
-        if is_meaningful_stock_name(static_name, stock_code):
-            self._stock_name_cache[stock_code] = static_name
-            return static_name
 
         # 3. 依次尝试各个数据源
         for fetcher in self._fetchers:

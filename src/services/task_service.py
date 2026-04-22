@@ -22,7 +22,6 @@ from typing import Optional, Dict, Any, List, Union
 
 from src.enums import ReportType
 from src.storage import get_db
-from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +68,8 @@ class TaskService:
         self,
         code: str,
         report_type: Union[ReportType, str] = ReportType.SIMPLE,
-        source_message: Optional[BotMessage] = None,
         save_context_snapshot: Optional[bool] = None,
-        query_source: str = "bot"
+        query_source: str = "cli"
     ) -> Dict[str, Any]:
         """
         提交异步分析任务
@@ -79,13 +77,13 @@ class TaskService:
         Args:
             code: 股票代码
             report_type: 报告类型枚举
-            source_message: 来源消息（用于回复）
             save_context_snapshot: 是否保存上下文快照
-            query_source: 任务来源标识（bot/api/cli/system）
+            query_source: 任务来源标识（api/cli/system）
 
         Returns:
             任务信息字典
         """
+
         # 确保 report_type 是枚举类型
         if isinstance(report_type, str):
             report_type = ReportType.from_str(report_type)
@@ -98,7 +96,6 @@ class TaskService:
             code,
             task_id,
             report_type,
-            source_message,
             save_context_snapshot,
             query_source
         )
@@ -143,15 +140,15 @@ class TaskService:
         code: str,
         task_id: str,
         report_type: ReportType = ReportType.SIMPLE,
-        source_message: Optional[BotMessage] = None,
         save_context_snapshot: Optional[bool] = None,
-        query_source: str = "bot"
+        query_source: str = "cli"
     ) -> Dict[str, Any]:
         """
         执行单只股票分析
 
         内部方法，在线程池中运行
         """
+
         # 初始化任务状态
         with self._tasks_lock:
             self._tasks[task_id] = {
@@ -176,7 +173,6 @@ class TaskService:
             pipeline = StockAnalysisPipeline(
                 config=config,
                 max_workers=1,
-                source_message=source_message,
                 query_id=task_id,
                 query_source=query_source,
                 save_context_snapshot=save_context_snapshot

@@ -26,7 +26,7 @@ from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import GeminiAnalyzer, AnalysisResult, fill_chip_structure_if_needed, fill_price_position_if_needed
-from src.data.stock_mapping import STOCK_NAME_MAP
+
 from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
 from src.services.social_sentiment_service import SocialSentimentService
@@ -34,7 +34,6 @@ from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import get_market_for_stock, is_market_open
 from data_provider.us_index_mapping import is_us_stock_code
-from bot.models import BotMessage
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +53,6 @@ class StockAnalysisPipeline:
         self,
         config: Optional[Config] = None,
         max_workers: Optional[int] = None,
-        source_message: Optional[BotMessage] = None,
         query_id: Optional[str] = None,
         query_source: Optional[str] = None,
         save_context_snapshot: Optional[bool] = None
@@ -68,7 +66,6 @@ class StockAnalysisPipeline:
         """
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
-        self.source_message = source_message
         self.query_id = query_id
         self.query_source = self._resolve_query_source(query_source)
         self.save_context_snapshot = (
@@ -81,7 +78,7 @@ class StockAnalysisPipeline:
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 趋势分析器
         self.analyzer = GeminiAnalyzer()
-        self.notifier = NotificationService(source_message=source_message)
+        self.notifier = NotificationService()
         
         # 初始化搜索服务
         self.search_service = SearchService(

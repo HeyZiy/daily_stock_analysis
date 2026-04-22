@@ -543,38 +543,6 @@ def _is_truthy_env(var_name: str, default: str = "true") -> bool:
     value = os.getenv(var_name, default).strip().lower()
     return value not in {"0", "false", "no", "off"}
 
-def start_bot_stream_clients(config: Config) -> None:
-    """Start bot stream clients when enabled in config."""
-    # 启动钉钉 Stream 客户端
-    if config.dingtalk_stream_enabled:
-        try:
-            from bot.platforms import start_dingtalk_stream_background, DINGTALK_STREAM_AVAILABLE
-            if DINGTALK_STREAM_AVAILABLE:
-                if start_dingtalk_stream_background():
-                    logger.info("[Main] Dingtalk Stream client started in background.")
-                else:
-                    logger.warning("[Main] Dingtalk Stream client failed to start.")
-            else:
-                logger.warning("[Main] Dingtalk Stream enabled but SDK is missing.")
-                logger.warning("[Main] Run: pip install dingtalk-stream")
-        except Exception as exc:
-            logger.error(f"[Main] Failed to start Dingtalk Stream client: {exc}")
-
-    # 启动飞书 Stream 客户端
-    if getattr(config, 'feishu_stream_enabled', False):
-        try:
-            from bot.platforms import start_feishu_stream_background, FEISHU_SDK_AVAILABLE
-            if FEISHU_SDK_AVAILABLE:
-                if start_feishu_stream_background():
-                    logger.info("[Main] Feishu Stream client started in background.")
-                else:
-                    logger.warning("[Main] Feishu Stream client failed to start.")
-            else:
-                logger.warning("[Main] Feishu Stream enabled but SDK is missing.")
-                logger.warning("[Main] Run: pip install lark-oapi")
-        except Exception as exc:
-            logger.error(f"[Main] Failed to start Feishu Stream client: {exc}")
-
 
 def main() -> int:
     """
@@ -630,11 +598,6 @@ def main() -> int:
     # 兼容旧版 WEBUI_ENABLED 环境变量
     if config.webui_enabled and not (args.serve or args.serve_only):
         args.serve = True
-
-    bot_clients_started = False
-
-    if bot_clients_started:
-        start_bot_stream_clients(config)
 
     try:
         # 模式0: 回测

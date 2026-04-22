@@ -26,7 +26,7 @@ from src.config import (
     resolve_news_window_days,
 )
 from src.storage import persist_llm_usage
-from src.data.stock_mapping import STOCK_NAME_MAP
+
 from src.schemas.report_schema import AnalysisReportSchema
 
 logger = logging.getLogger(__name__)
@@ -274,11 +274,7 @@ def get_stock_name_multi_source(
         if 'realtime' in context and context['realtime'].get('name'):
             return context['realtime']['name']
 
-    # 2. 从静态映射表获取
-    if stock_code in STOCK_NAME_MAP:
-        return STOCK_NAME_MAP[stock_code]
-
-    # 3. 从数据源获取
+    # 2. 从数据源获取
     if data_manager is None:
         try:
             from data_provider.base import DataFetcherManager
@@ -290,8 +286,6 @@ def get_stock_name_multi_source(
         try:
             name = data_manager.get_stock_name(stock_code)
             if name:
-                # 更新缓存
-                STOCK_NAME_MAP[stock_code] = name
                 return name
         except Exception as e:
             logger.debug(f"从数据源获取股票名称失败: {e}")
@@ -839,7 +833,7 @@ class GeminiAnalyzer:
                 name = context['realtime']['name']
             else:
                 # 最后从映射表获取
-                name = STOCK_NAME_MAP.get(code, f'股票{code}')
+                name = f'股票{code}'
         
         # 如果模型不可用，返回默认结果
         if not self.is_available():
@@ -977,7 +971,7 @@ class GeminiAnalyzer:
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
         if not stock_name or stock_name == f'股票{code}':
-            stock_name = STOCK_NAME_MAP.get(code, f'股票{code}')
+            stock_name = f'股票{code}'
             
         today = context.get('today', {})
         
