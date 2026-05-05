@@ -46,7 +46,6 @@ from typing import List, Optional, Tuple, Dict
 
 from data_provider.base import canonical_stock_code
 from src.core.pipeline import StockAnalysisPipeline
-from src.core.market_review import run_market_review
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
@@ -124,7 +123,6 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --no-notify        # 不发送推送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
-  python main.py --market-review    # 仅运行大盘复盘
         '''
     )
 
@@ -169,18 +167,6 @@ def parse_arguments() -> argparse.Namespace:
         '--no-run-immediately',
         action='store_true',
         help='定时任务启动时不立即执行一次'
-    )
-
-    parser.add_argument(
-        '--market-review',
-        action='store_true',
-        help='仅运行大盘复盘分析'
-    )
-
-    parser.add_argument(
-        '--no-market-review',
-        action='store_true',
-        help='跳过大盘复盘分析'
     )
 
     parser.add_argument(
@@ -267,24 +253,21 @@ def _compute_trading_day_filter(
     config: Config,
     args: argparse.Namespace,
     stock_codes: List[str],
-) -> Tuple[List[str], Optional[str], bool]:
+) -> Tuple[List[str], bool]:
     """
-    Compute filtered stock list and effective market review region (Issue #373).
+    Compute filtered stock list based on trading days (Issue #373).
 
     Returns:
-        (filtered_codes, effective_region, should_skip_all)
-        - effective_region None = use config default (check disabled)
-        - effective_region '' = all relevant markets closed, skip market review
-        - should_skip_all: skip entire run when no stocks and no market review to run
+        (filtered_codes, should_skip_all)
+        - should_skip_all: skip entire run when no stocks left
     """
     force_run = getattr(args, 'force_run', False)
     if force_run or not getattr(config, 'trading_day_check_enabled', True):
-        return (stock_codes, None, False)
+        return (stock_codes, False)
 
     from src.core.trading_calendar import (
         get_market_for_stock,
         get_open_markets_today,
-        compute_effective_region,
     )
 
     open_markets = get_open_markets_today()
@@ -294,15 +277,8 @@ def _compute_trading_day_filter(
         if mkt in open_markets or mkt is None:
             filtered_codes.append(code)
 
-    if config.market_review_enabled and not getattr(args, 'no_market_review', False):
-        effective_region = compute_effective_region(
-            getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
-        )
-    else:
-        effective_region = None
-
-    should_skip_all = (not filtered_codes) and (effective_region or '') == ''
-    return (filtered_codes, effective_region, should_skip_all)
+    should_skip_all = not filtered_codes
+    return (filtered_codes, should_skip_all)
 
 
 def run_full_analysis(
@@ -312,7 +288,7 @@ def run_full_analysis(
     stock_name_mapping: Optional[Dict[str, str]] = None
 ):
     """
-    执行完整的分析流程（个股 + 大盘复盘）
+    执行个股分析流程
 
     这是定时任务调用的主函数
     """
@@ -323,7 +299,7 @@ def run_full_analysis(
 
         # Issue #373: Trading day filter (per-stock, per-market)
         effective_codes = stock_codes if stock_codes is not None else config.stock_list
-        filtered_codes, effective_region, should_skip = _compute_trading_day_filter(
+        filtered_codes, should_skip = _compute_trading_day_filter(
             config, args, effective_codes
         )
         if should_skip:
@@ -339,14 +315,6 @@ def run_full_analysis(
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
-
-        # Issue #190: 个股与大盘复盘合并推送
-        merge_notification = (
-            getattr(config, 'merge_email_notification', False)
-            and config.market_review_enabled
-            and not getattr(args, 'no_market_review', False)
-            and not config.single_stock_notify
-        )
 
         # 检查 LLM 配置，如果没有则报错退出
         has_llm_config = bool(
@@ -384,57 +352,8 @@ def run_full_analysis(
         results = pipeline.run(
             stock_codes=stock_codes,
             send_notification=not args.no_notify,
-            merge_notification=merge_notification
+            merge_notification=False
         )
-
-        # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
-        analysis_delay = getattr(config, 'analysis_delay', 0)
-        if (
-            analysis_delay > 0
-            and config.market_review_enabled
-            and not args.no_market_review
-            and effective_region != ''
-        ):
-            logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
-            time.sleep(analysis_delay)
-
-        # 2. 运行大盘复盘（如果启用且不是仅个股模式）
-        market_report = ""
-        if (
-            config.market_review_enabled
-            and not args.no_market_review
-            and effective_region != ''
-        ):
-            review_result = run_market_review(
-                notifier=pipeline.notifier,
-                analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service,
-                send_notification=not args.no_notify,
-                merge_notification=merge_notification,
-                override_region=effective_region,
-            )
-            # 如果有结果，赋值给 market_report 用于后续飞书文档生成
-            if review_result:
-                market_report = review_result
-
-        # Issue #190: 合并推送（个股+大盘复盘）
-        if merge_notification and (results or market_report) and not args.no_notify:
-            parts = []
-            if market_report:
-                parts.append(f"# 📈 大盘复盘\n\n{market_report}")
-            if results:
-                dashboard_content = pipeline.notifier.generate_aggregate_report(
-                    results,
-                    getattr(config, 'report_type', 'simple'),
-                )
-                parts.append(f"# 🚀 个股决策仪表盘\n\n{dashboard_content}")
-            if parts:
-                combined_content = "\n\n---\n\n".join(parts)
-                if pipeline.notifier.is_available():
-                    if pipeline.notifier.send(combined_content, email_send_to_all=True):
-                        logger.info("已合并推送（个股+大盘复盘）")
-                    else:
-                        logger.warning("合并推送失败")
 
         # 输出摘要
         if results:
@@ -453,28 +372,20 @@ def run_full_analysis(
             from src.feishu_doc import FeishuDocManager
 
             feishu_doc = FeishuDocManager()
-            if feishu_doc.is_configured() and (results or market_report):
+            if feishu_doc.is_configured() and results:
                 logger.info("正在创建飞书云文档...")
 
-                # 1. 准备标题 "01-01 13:01大盘复盘"
+                # 1. 准备标题
                 tz_cn = timezone(timedelta(hours=8))
                 now = datetime.now(tz_cn)
-                doc_title = f"{now.strftime('%Y-%m-%d %H:%M')} 大盘复盘"
+                doc_title = f"{now.strftime('%Y-%m-%d %H:%M')} 个股分析"
 
-                # 2. 准备内容 (拼接个股分析和大盘复盘)
-                full_content = ""
-
-                # 添加大盘复盘内容（如果有）
-                if market_report:
-                    full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
-
-                # 添加个股决策仪表盘（使用 NotificationService 生成，按 report_type 分支）
-                if results:
-                    dashboard_content = pipeline.notifier.generate_aggregate_report(
-                        results,
-                        getattr(config, 'report_type', 'simple'),
-                    )
-                    full_content += f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"
+                # 2. 准备内容
+                dashboard_content = pipeline.notifier.generate_aggregate_report(
+                    results,
+                    getattr(config, 'report_type', 'simple'),
+                )
+                full_content = f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"
 
                 # 3. 创建文档
                 doc_url = feishu_doc.create_daily_doc(doc_title, full_content)
@@ -482,7 +393,7 @@ def run_full_analysis(
                     logger.info(f"飞书云文档创建成功: {doc_url}")
                     # 可选：将文档链接也推送到群里
                     if not args.no_notify:
-                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
+                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 分析文档创建成功: {doc_url}")
 
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
@@ -617,65 +528,7 @@ def main() -> int:
             )
             return 0
 
-        # 模式1: 仅大盘复盘
-        if args.market_review:
-            from src.analyzer import GeminiAnalyzer
-            from src.core.market_review import run_market_review
-            from src.notification import NotificationService
-            from src.search_service import SearchService
-
-            # Issue #373: Trading day check for market-review-only mode.
-            # Do NOT use _compute_trading_day_filter here: that helper checks
-            # config.market_review_enabled, which would wrongly block an
-            # explicit --market-review invocation when the flag is disabled.
-            effective_region = None
-            if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
-                from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
-                open_markets = get_open_markets_today()
-                effective_region = _compute_region(
-                    getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
-                )
-                if effective_region == '':
-                    logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
-                    return 0
-
-            logger.info("模式: 仅大盘复盘")
-            notifier = NotificationService()
-
-            # 初始化搜索服务和分析器（如果有配置）
-            search_service = None
-            analyzer = None
-
-            if config.bocha_api_keys or config.tavily_api_keys or config.brave_api_keys or config.serpapi_keys or config.minimax_api_keys or config.searxng_base_urls:
-                search_service = SearchService(
-                    bocha_keys=config.bocha_api_keys,
-                    tavily_keys=config.tavily_api_keys,
-                    brave_keys=config.brave_api_keys,
-                    serpapi_keys=config.serpapi_keys,
-                    minimax_keys=config.minimax_api_keys,
-                    searxng_base_urls=config.searxng_base_urls,
-                    news_max_age_days=config.news_max_age_days,
-                    news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
-                )
-
-            if config.llm_model_list:
-                analyzer = GeminiAnalyzer()
-                if not analyzer.is_available():
-                    logger.warning("AI 分析器初始化后不可用，请检查 LLM 配置")
-                    analyzer = None
-            else:
-                logger.warning("未检测到 LLM 配置，将仅使用模板生成报告")
-
-            run_market_review(
-                notifier=notifier,
-                analyzer=analyzer,
-                search_service=search_service,
-                send_notification=not args.no_notify,
-                override_region=effective_region,
-            )
-            return 0
-
-        # 模式2: 定时任务模式
+        # 模式1: 定时任务模式
         if args.schedule or config.schedule_enabled:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
