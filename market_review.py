@@ -172,7 +172,37 @@ def main():
         return 1
 
 
-def check_market_gate() -> Tuple[bool, Dict[str, bool], str]:
+def _detect_regime(index_df, met_count: int) -> str:
+    """根据指数均线状态和门控条件数判断当前市场状态
+
+    Returns:
+        trending_up   — 均线多头且门控条件足，趋势行情
+        trending_down — 均线空头，控仓观望
+        sideways      — 居中震荡栋
+        unknown       — 无法判断，保守处理
+    """
+    import pandas as pd
+    try:
+        if index_df is None or len(index_df) < 20:
+            return "unknown"
+        ma5  = index_df['close'].rolling(5).mean().iloc[-1]
+        ma10 = index_df['close'].rolling(10).mean().iloc[-1]
+        ma20 = index_df['close'].rolling(20).mean().iloc[-1]
+        close = index_df['close'].iloc[-1]
+        if any(pd.isna(x) for x in [ma5, ma10, ma20]):
+            return "unknown"
+        if ma5 > ma10 > ma20 and close > ma10 and met_count >= 2:
+            return "trending_up"
+        if ma5 < ma10 < ma20 and close < ma10:
+            return "trending_down"
+        if abs(close - ma20) / ma20 < 0.03:
+            return "sideways"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str]:
     """
     博弈仓策略 — 市场环境开仓门控
 
@@ -184,7 +214,7 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str]:
     5. 主线板块持续活跃3天以上 — 暂无可靠数据源，跳过
 
     Returns:
-        (can_trade, conditions_dict, summary_str)
+        (can_trade, conditions_dict, summary_str, regime)
     """
     import pandas as pd
     from datetime import date
@@ -253,7 +283,7 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str]:
 
     except Exception as e:
         logger.error(f"市场门控检查失败: {e}")
-        return True, conditions, "市场环境检查失败（默认放行）"
+        return True, conditions, "市场环境检查失败（默认放行）", "unknown"
 
     can_trade = met_count >= 2
     env_icon = "✅ 允许开仓" if can_trade else "❌ 建议空仓"
@@ -262,12 +292,14 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str]:
         + "\n".join(details)
     )
 
+    regime = _detect_regime(index_df if len(index_df) > 0 else None, met_count)
+
     if can_trade:
         logger.info(f"✅ 市场环境满足开仓条件（{met_count}/5）")
     else:
         logger.warning(f"⛔ 市场环境不满足开仓条件（仅{met_count}/5），建议空仓")
 
-    return can_trade, conditions, summary
+    return can_trade, conditions, summary, regime
 
 
 if __name__ == '__main__':

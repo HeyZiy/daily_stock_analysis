@@ -1,12 +1,12 @@
-# 📈 A股自选股智能分析系统
+﻿# 📈 趋势波段自动化系统
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> 🤖 基于 AI 大模型的个人自选股每日自动分析工具
+> 📊 基于博弈仓策略的 A 股趋势波段跟踪系统
 >
-> 每日定时分析自选股，通过邮件推送「决策仪表盘」
+> 纯技术分析，无 LLM，每日收盘后自动选股、筛信号、推报告。
 
 ---
 
@@ -14,160 +14,153 @@
 
 | 功能 | 说明 |
 |------|------|
-| **AI 分析** | 一句话核心结论 + 买卖点位 + 操作检查清单 |
-| **多维度** | 技术面 + 筹码分布 + 舆情情报 + 实时行情 |
-| **多市场** | A股、港股、美股 |
-| **自动推送** | 每日定时分析，邮件通知 |
-| **零成本** | GitHub Actions 免费运行，无需服务器 |
+| **策略选股** | 妙想 API 自然语言选股，每日收盘后初筛候选股 |
+| **观察池维护** | 自动追踪自选股，趋势破坏自动剔除（跌破 MA10 / 放量长阴） |
+| **市场门控** | 收盘后检查5项环境条件，不满足2条则不建议开仓 |
+| **买点检测** | 纯技术分析：均线多头 + 缩量回踩 MA5 分歧信号 |
+| **卖出提示** | 分级卖出：放量跌破 MA5 减仓 50%，跌破 MA10 清仓 |
+| **大盘复盘** | 独立大盘复盘（可选 LLM 增强，不配置则自动降级） |
+| **多渠道通知** | 飞书 / 钉钉 / Discord / 邮件，任配一个即可 |
+| **零成本运行** | GitHub Actions 免费计算，无需服务器 |
 
 ---
 
-## 🚀 快速开始
+## 🗂 核心模块
 
-### 方式一：GitHub Actions（推荐）
+```
+mx_smart_screen.py   — 每日初筛选股（调用妙想 MX API）
+main.py       — 策略主控（观察池 + 买卖信号 + 报告 + 通知）
+market_review.py     — 市场环境门控 + 大盘复盘
+```
 
-> 5 分钟完成部署，零成本，无需服务器。
+📖 策略全文见 [docs/main_strategie.md](docs/main_strategie.md)
 
-#### 1. Fork 本仓库
+---
 
-点击右上角 `Fork` 按钮
+## ⏰ 每日执行时序（GitHub Actions）
 
-#### 2. 配置 Secrets
+```
+北京时间
+15:00  A股收盘
+15:30  ① smart_screen        → 初筛候选股，写入妙想自选
+16:00  ② daily_simple_analysis → 技术分析 + 买卖信号报告 + 通知
+16:30  ③ market_review        → 大盘复盘 + 通知
+```
+
+---
+
+## 🚀 快速开始（GitHub Actions）
+
+### 1. Fork 本仓库
+
+点击右上角 `Fork`
+
+### 2. 配置 Secrets
 
 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
 
-**AI 模型配置（至少配置一个）**
+**必填**
 
-| Secret 名称 | 说明 | 必填 |
-|------------|------|:----:|
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 免费 Key | ✅ 推荐 |
-| `DEEPSEEK_API_KEY` | [DeepSeek](https://platform.deepseek.com/) Key（作为 fallback） | 可选 |
+| Secret | 说明 |
+|--------|------|
+| `MX_APIKEY` | 妙想 API Key（用于自选股选股） |
 
-**通知渠道**
+**通知渠道（至少配一个）**
 
-| Secret 名称 | 说明 |
-|------------|------|
-| `EMAIL_SENDER` / `EMAIL_PASSWORD` / `EMAIL_RECEIVERS` | 邮件通知（必填） |
+| Secret | 说明 |
+|--------|------|
+| `FEISHU_WEBHOOK_URL` | 飞书群机器人 Webhook |
+| `DINGTALK_WEBHOOK_URL` | 钉钉群机器人 Webhook |
+| `DISCORD_WEBHOOK_URL` | Discord Webhook |
+| `EMAIL_SENDER` / `EMAIL_PASSWORD` / `EMAIL_RECEIVERS` | 邮件通知 |
 
-**自选股配置**
+**可选**
 
-| Secret 名称 | 说明 | 示例 |
-|------------|------|------|
-| `STOCK_LIST` | 自选股代码 | `600519,000858,hk00700,AAPL` |
+| Secret / Variable | 说明 |
+|--------|------|
+| `SMART_SCREEN_KEYWORD` | 选股条件（留空则需手动触发时指定） |
+| `TUSHARE_TOKEN` | Tushare 数据源 Token |
+| `GEMINI_API_KEY` | 大盘复盘 LLM 增强（不配置则跳过） |
+| `BOCHA_API_KEYS` / `TAVILY_API_KEYS` | 搜索引擎（大盘复盘用，可选） |
 
-#### 3. 启用 Actions
+### 3. 启用 Actions
 
 `Actions` 标签 → `I understand my workflows, go ahead and enable them`
 
-#### 4. 手动测试
+### 4. 手动测试
 
-`Actions` → `每日股票分析` → `Run workflow` → `Run workflow`
+`Actions` → 选择对应 workflow → `Run workflow`
 
 ---
 
-### 方式二：本地运行
+## 💻 本地运行
 
 ```bash
-# 克隆项目
-git clone https://github.com/yourname/daily_stock_analysis.git
+git clone <your-fork-url>
 cd daily_stock_analysis
 
-# 安装依赖
 pip install -r requirements.txt
 
-# 配置环境变量
+# 复制并填写配置
 cp .env.example .env
-# 编辑 .env 填入你的 API Key
+# 编辑 .env，填入 MX_APIKEY 和通知渠道
 
-# 运行分析
+# 主分析（技术信号报告）
 python main.py
 
-# 定时任务模式
-python main.py --schedule
+# 仅选股（写入妙想自选）
+python mx_smart_screen.py
+
+# 大盘复盘
+python market_review.py
+
+# 调试模式
+python main.py --debug --no-notify
 ```
 
 ---
 
-## ⚙️ 配置说明
-
-### 环境变量（.env）
+## ⚙️ 关键环境变量
 
 ```bash
-# AI 模型
-GEMINI_API_KEY=your_gemini_key
-DEEPSEEK_API_KEY=your_deepseek_key  # 可选，作为 fallback
+# 妙想 API（必填）
+MX_APIKEY=your_mx_apikey
 
-# 自选股
-STOCK_LIST=600519,000858,hk00700,AAPL
+# 选股条件（可在 Action 手动触发时覆盖）
+SMART_SCREEN_KEYWORD=均线多头排列，涨幅2%-7%，换手率超过5%
 
-# 邮件通知
-EMAIL_SENDER=your_email@example.com
-EMAIL_PASSWORD=your_password
-EMAIL_RECEIVERS=receiver1@example.com,receiver2@example.com
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
+# 通知（至少配一个）
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+# DINGTALK_WEBHOOK_URL=...
+# DISCORD_WEBHOOK_URL=...
+# EMAIL_SENDER=sender@example.com
+# EMAIL_PASSWORD=...
+# EMAIL_RECEIVERS=receiver@example.com
+
+# 可选数据源
+TUSHARE_TOKEN=your_tushare_token
 ```
-
-### 股票代码格式
-
-| 市场 | 格式 | 示例 |
-|------|------|------|
-| A股 | 6位数字 | `600519`, `000858` |
-| 港股 | hk+5位数字 | `hk00700`, `hk09988` |
-| 美股 | 字母代码 | `AAPL`, `TSLA` |
 
 ---
 
-## 📝 工作原理
+## 📊 策略摘要
 
-```
-定时任务触发（默认工作日 18:00）
-        ↓
-获取自选股列表
-        ↓
-对每只股票：
-  ├─ 获取实时行情
-  ├─ 获取历史数据
-  ├─ 获取新闻舆情
-  └─ LLM 分析生成报告
-        ↓
-邮件推送分析结果
-```
+| 阶段 | 规则 |
+|------|------|
+| **市场过滤** | 满足 2/5 项环境条件才允许开仓（否则空仓） |
+| **选股池** | 均线多头（MA5>MA10>MA20）+ 涨幅 2-7% + 换手率>5% |
+| **买点** | 主升中第一次分歧回踩 MA5，缩量 + 不破 5 日线 |
+| **第一卖点** | 放量跌破 MA5 / 高位长阴 / 回撤≥5% → 减仓 50% |
+| **第二卖点** | 连续 2 日跌破 MA10 / 放量跌破 MA10 → 清仓 |
+| **止损** | 买入逻辑被否定收盘执行；闪崩盘中直接走 |
 
-### AI 模型优先级
-
-1. **Gemini**（主模型）
-2. **DeepSeek**（fallback，当 Gemini 额度耗尽时自动切换）
-
----
-
-## 📊 推送效果
-
-每日邮件推送包含：
-- 📌 **核心结论**：买入/观望/卖出建议
-- 📈 **技术信号**：均线排列、支撑压力位
-- 🎯 **精确点位**：买入价、止损价、目标价
-- 📰 **舆情情报**：相关新闻摘要
-- ✅ **检查清单**：各项条件满足情况
-
----
-
-## 💡 常见问题
-
-**Q: Gemini 免费额度是多少？**
-> 20 次/天。额度耗尽后自动切换到 DeepSeek（如果配置了）。
-
-**Q: 可以分析多少只股票？**
-> 取决于 API 额度。Gemini 免费版建议不超过 15 只。
-
-**Q: 非交易日会执行吗？**
-> 默认不会。如需测试，可手动触发 Actions。
+📖 完整策略见 [docs/main_strategie.md](docs/main_strategie.md)
 
 ---
 
 ## 📄 License
 
-本项目基于 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 进行定制，遵循原项目的 [MIT License](LICENSE)。
+本项目基于 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 改造，遵循原项目 [MIT License](LICENSE)。
 
 ---
 

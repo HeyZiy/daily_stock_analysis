@@ -1,22 +1,13 @@
-name: 每日股票分析
+name: 每日简化版趋势跟踪分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每天北京时间 16:00 (UTC 8:00) 收盘后执行
   schedule:
-    - cron: '30 6 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '00 8 * * 1-5'     # 周一到周五，UTC 08:00 = 北京时间 16:00（选股完成后）
   
   # 手动触发
   workflow_dispatch:
     inputs:
-      mode:
-        description: '运行模式'
-        required: true
-        default: 'stocks-only'
-        type: choice
-        options:
-          - full          # 完整分析（股票+大盘）
-          - market-only   # 仅大盘复盘
-          - stocks-only   # 仅股票分析
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
@@ -25,7 +16,7 @@ on:
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
-  group: stock-analysis
+  group: simple-stock-analysis
   cancel-in-progress: false
 
 jobs:
@@ -56,74 +47,48 @@ jobs:
         run: |
           mkdir -p data logs reports
 
-      - name: 执行股票分析
+      - name: 执行简化版趋势跟踪分析
         env:
           # ==========================================
           # 数据源
           # ==========================================
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }} # 暂时没转移
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           MX_APIKEY: ${{ secrets.MX_APIKEY }}
-          # ==========================================
-          # 搜索引擎配置（至少配置一个）
-          # ==========================================
-          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
-          MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
-          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
-          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
-          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-          SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS }}
-          # ==========================================
-          # AI 模型配置（简化版）
-          # ==========================================
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          # DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1' }}
 
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
           # ==========================================
-          # 方式四：邮件
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }} # 暂时没转移
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }} # 暂时没转移
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }} # 暂时没转移
+          # 飞书
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          # 钉钉
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          # Discord
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # 邮件
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
           EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
 
           # ==========================================
           # 自选股配置
           # ==========================================
           STOCK_LIST: ${{ vars.STOCK_LIST }}
-          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
-          
-          # ==========================================
-          # 运行配置 ⬅️ 新增！
-          # ==========================================
-          REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
-          SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
-          MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
-          ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
-          TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
           
           # ==========================================
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO
           MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
-          # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
-          ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
           # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
           # 可选值: tencent, akshare_sina, efinance, akshare_em, tushare
-          # 如果有 Tushare Pro 高积分账号，可将 tushare 放在首位
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
-          # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'stocks-only' }}"
-          
           echo "=========================================="
-          echo "🚀 A股自选股智能分析系统"
+          echo "🚀 简化版趋势跟踪系统 (无 LLM)"
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "🎯 运行模式: $MODE"
           
           # 构建命令行参数
           FORCE_RUN_ARG=""
@@ -133,19 +98,13 @@ jobs:
           fi
 
           # 执行分析
-          if [ "$MODE" = "market-only" ]; then
-            python main.py --market-review $FORCE_RUN_ARG
-          elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
-          else
-            python main.py $FORCE_RUN_ARG
-          fi
+          python main.py $FORCE_RUN_ARG
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: analysis-reports-${{ github.run_number }}
+          name: simple-analysis-reports-${{ github.run_number }}
           path: reports/
           retention-days: 30
       
@@ -163,7 +122,7 @@ jobs:
             echo "⚠️ 未生成报告文件"
           fi
           echo ""
-          if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
+          if [ -f "logs/stock_analysis_simple_$(date +%Y%m%d).log" ]; then
             echo "📜 最近日志（最后 30 行）:"
-            tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
+            tail -30 logs/stock_analysis_simple_*.log 2>/dev/null || echo "无日志"
           fi

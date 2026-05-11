@@ -9,7 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### 新功能
+### 博弈仓改造（2026-05-11）
+
+#### 重构
+
+- **三模块分工重整**：将市场环境门控逻辑（原 `SimpleTechnicalAnalyzer.check_market_environment`）迁移至 `market_review.py`，以 `check_market_gate()` 形式对外暴露；`main_simple.py` 改为 import 调用，消除重复实现。
+- **`mx_smart_screen.py`** 职责收窄为纯 MX API 封装与选股结果输出，不做分析不做数据库写入。
+
+#### GitHub Actions
+
+- **`smart_screen.yml`**：触发时间从北京 15:00 修正为 15:30（收盘后数据稳定后再选股）。
+- **`daily_simple_analysis.yml`**：触发时间从盘中 14:40 修正为收盘后 16:00（选股完成后执行技术分析）。
+- **`market_review.yml`**（新建）：独立大盘复盘 Action，北京 16:30 触发，调用 `market_review.py`。
+- 三个 Action 各自独立 cron，互不依赖，任一失败不阻塞其他。
+
+#### 文档与清理
+
+- 重写 `README.md`，移除所有上游 LLM/WebUI/Docker 内容，改为描述博弈仓三模块 + GitHub Actions 的实际用法。
+- 删除与本项目无关的旧文档：`docs/DEPLOY.md`、`docs/DEPLOY_EN.md`、`docs/FAQ.md`、`docs/FAQ_EN.md`、`docs/docker/`、`docs/architecture/`。
+- 删除无调用路径的遗留文件：`analyzer_service.py`。
+
+### 新功能（上游）
 
 - 📱 **Social Sentiment Intelligence (US stocks)** — 新增 Reddit / X (Twitter) / Polymarket 社交媒体情绪数据源，为美股分析提供实时社交舆情情报。数据来自 api.adanos.org，包含 Buzz Score、情绪评分、提及量等指标。完全可选（需配置 `SOCIAL_SENTIMENT_API_KEY`），仅对美股生效，A 股 / 港股不受影响。
 - 🔍 **接入Tushare筹码、行业板块涨跌接口** — 新增 Tushare筹码分布、行业板块涨跌接口获取；修复筹码分布判断部分错误；将筹码分布与行业板块的数据源优先级改为与实时行情获取优先级一致，均在.env配置；默认在上海时间19点之后才能用Tushare获取当天交易日的筹码分布，盘后获取当天交易日的行业板块涨跌，否则用前一个交易日的；行业板块涨跌受数据源影响，结果会不一致，优先使用Tushare的同花顺接口、其次东财接口。

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 模拟盘自动交易入口
 
@@ -47,12 +47,12 @@ def run_analysis() -> str:
     执行盘后分析
     
     流程：
-    1. 运行 main_simple.py 获取技术信号
+    1. 运行 main.py 获取技术信号
     2. 筛选高优先级买入候选
     3. 生成次日交易计划
     4. 返回报告文本（用于微信通知）
     """
-    from main_simple import SimpleTechnicalAnalyzer
+    from main import SimpleTechnicalAnalyzer
 
     logger.info("开始盘后分析...")
 
