@@ -23,19 +23,10 @@ from src.config import get_config
 from src.analyzer import AnalysisResult
 from src.enums import ReportType
 from src.utils.data_processing import normalize_model_used
-from src.notification_sender import (
-    AstrbotSender,
-    CustomWebhookSender,
-    DiscordSender,
-    EmailSender,
-    FeishuSender,
-    PushoverSender,
-    PushplusSender,
-    Serverchan3Sender,
-    TelegramSender,
-    WechatSender,
-    WECHAT_IMAGE_MAX_BYTES
-)
+from src.notification_sender.email_sender import EmailSender
+
+# 企业微信图片大小限制（约 2MB）
+WECHAT_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -81,18 +72,7 @@ class ChannelDetector:
         return names.get(channel, "未知渠道")
 
 
-class NotificationService(
-    AstrbotSender,
-    CustomWebhookSender,
-    DiscordSender,
-    EmailSender,
-    FeishuSender,
-    PushoverSender,
-    PushplusSender,
-    Serverchan3Sender,
-    TelegramSender,
-    WechatSender
-):
+class NotificationService(EmailSender):
     """
     通知服务
     
