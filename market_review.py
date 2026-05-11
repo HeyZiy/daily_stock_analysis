@@ -19,6 +19,7 @@ A股自选股智能分析系统 - 大盘复盘独立入口
 import sys
 import argparse
 import logging
+from typing import Dict, Tuple
 
 from src.config import setup_env, get_config, Config
 from src.logging_config import setup_logging
@@ -169,6 +170,104 @@ def main():
     except Exception as e:
         logger.exception(f'大盘复盘执行异常: {e}')
         return 1
+
+
+def check_market_gate() -> Tuple[bool, Dict[str, bool], str]:
+    """
+    博弈仓策略 — 市场环境开仓门控
+
+    满足两条件以上才允许开仓：
+    1. 指数站上20日线（上证指数）
+    2. 成交额高于近20日均量
+    3. 有明确持续主线（非一日游）— 暂无可靠数据源，跳过
+    4. 涨停家数明显高于跌停家数
+    5. 主线板块持续活跃3天以上 — 暂无可靠数据源，跳过
+
+    Returns:
+        (can_trade, conditions_dict, summary_str)
+    """
+    import pandas as pd
+    from datetime import date
+
+    logger = logging.getLogger(__name__)
+
+    conditions: Dict[str, bool] = {
+        "指数站上20日线":   False,
+        "成交额高于近20日均量": False,
+        "有明确持续主线":   False,   # 需外部数据，暂跳过
+        "涨停多于跌停":    False,
+        "板块持续活跃3天":  False,   # 需外部数据，暂跳过
+    }
+    met_count = 0
+    details = []
+
+    try:
+        import akshare as ak
+
+        # 条件1 & 2：上证指数日线数据
+        index_df = ak.stock_zh_index_daily(symbol="sh000001")
+        if index_df is not None and len(index_df) >= 20:
+            index_df = index_df.sort_values('date').reset_index(drop=True)
+            index_df['ma20'] = index_df['close'].rolling(window=20).mean()
+            latest_idx = index_df.iloc[-1]
+            idx_close = latest_idx['close']
+            idx_ma20 = latest_idx['ma20']
+
+            if pd.notna(idx_ma20) and idx_close > idx_ma20:
+                conditions["指数站上20日线"] = True
+                met_count += 1
+                details.append(f"✅ 上证指数{idx_close:.0f} > MA20{idx_ma20:.0f}")
+            else:
+                details.append(f"❌ 上证指数{idx_close:.0f} ≤ MA20{idx_ma20:.0f}")
+
+            if 'amount' in index_df.columns:
+                latest_amount = latest_idx.get('amount', 0)
+                avg_amount = index_df['amount'].iloc[-20:].mean()
+                if pd.notna(avg_amount) and avg_amount > 0 and latest_amount > avg_amount:
+                    conditions["成交额高于近20日均量"] = True
+                    met_count += 1
+                    details.append(f"✅ 成交额{latest_amount/1e8:.0f}亿 > 20日均量{avg_amount/1e8:.0f}亿")
+                else:
+                    details.append(f"❌ 成交额{latest_amount/1e8:.0f}亿 ≤ 20日均量{avg_amount/1e8:.0f}亿")
+
+        # 条件4：涨跌停数据
+        try:
+            today_str = date.today().strftime("%Y%m%d")
+            zt_df = ak.stock_zt_pool_em(date=today_str)
+            if zt_df is not None and not zt_df.empty:
+                limit_up = len(zt_df)
+                dt_df = ak.stock_zt_pool_dtgc_em(date=today_str)
+                limit_down = len(dt_df) if dt_df is not None else 0
+                if limit_up > limit_down * 1.5:
+                    conditions["涨停多于跌停"] = True
+                    met_count += 1
+                    details.append(f"✅ 涨停{limit_up}家 > 跌停{limit_down}家")
+                else:
+                    details.append(f"⚠️ 涨停{limit_up}家 ≈ 跌停{limit_down}家（条件不满足）")
+        except Exception:
+            details.append("⚠️ 获取涨跌停数据失败，跳过此项")
+
+        # 条件3 & 5：暂无可靠数据源，跳过
+        details.append("➖ 持续主线（暂无数据源，跳过）")
+        details.append("➖ 板块活跃3天（暂无数据源，跳过）")
+
+    except Exception as e:
+        logger.error(f"市场门控检查失败: {e}")
+        return True, conditions, "市场环境检查失败（默认放行）"
+
+    can_trade = met_count >= 2
+    env_icon = "✅ 允许开仓" if can_trade else "❌ 建议空仓"
+    summary = (
+        f"市场环境检查：满足{met_count}/5项条件 → {env_icon}\n"
+        + "\n".join(details)
+    )
+
+    if can_trade:
+        logger.info(f"✅ 市场环境满足开仓条件（{met_count}/5）")
+    else:
+        logger.warning(f"⛔ 市场环境不满足开仓条件（仅{met_count}/5），建议空仓")
+
+    return can_trade, conditions, summary
 
 
 if __name__ == '__main__':

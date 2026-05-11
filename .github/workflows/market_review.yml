@@ -1,128 +1,137 @@
-name: 每日简化版趋势跟踪分析
+name: 大盘复盘
 
 on:
-  # 定时触发 - 每天北京时间 16:00 (UTC 8:00) 收盘后执行
+  # 定时触发 - 每天北京时间 16:30 (UTC 08:30) 收盘后执行
   schedule:
-    - cron: '00 8 * * 1-5'     # 周一到周五，UTC 08:00 = 北京时间 16:00（选股完成后）
-  
+    - cron: '30 8 * * 1-5'     # 周一到周五，UTC 08:30 = 北京时间 16:30
+
   # 手动触发
   workflow_dispatch:
     inputs:
+      region:
+        description: '市场地区'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - cn
+          - us
+          - both
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
         default: false
         type: boolean
 
-# 并发控制：同一时间只运行一个分析任务
+# 并发控制：同一时间只运行一个复盘任务
 concurrency:
-  group: simple-stock-analysis
+  group: market-review
   cancel-in-progress: false
 
 jobs:
-  analyze:
+  review:
     runs-on: ubuntu-latest
-    # 添加超时限制，防止任务卡死
-    timeout-minutes: 30
-    
+    timeout-minutes: 20
+
     steps:
       - name: 随机延迟（避免固定时间访问）
-        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
-      
+        run: sleep $((RANDOM % 60))
+
       - name: 检出代码
         uses: actions/checkout@v5
-      
+
       - name: 设置 Python 环境
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: 安装依赖
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
 
-      - name: 执行简化版趋势跟踪分析
+      - name: 执行大盘复盘
         env:
           # ==========================================
-          # 数据源
+          # 搜索引擎配置（至少配置一个，否则降级运行）
           # ==========================================
-          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          MX_APIKEY: ${{ secrets.MX_APIKEY }}
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS }}
 
           # ==========================================
-          # 通知渠道（可同时配置多个，全部推送）
+          # AI 模型配置（未配置则跳过 LLM 分析）
           # ==========================================
-          # 飞书
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+          # ==========================================
+          # 通知渠道
+          # ==========================================
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          # 钉钉
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
-          # Discord
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          # 邮件
           EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
           EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
 
           # ==========================================
-          # 自选股配置
-          # ==========================================
-          STOCK_LIST: ${{ vars.STOCK_LIST }}
-          
-          # ==========================================
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO
-          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
-          # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
-          # 可选值: tencent, akshare_sina, efinance, akshare_em, tushare
-          REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
-          
+          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || 'cn' }}
+          TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || 'true' }}
+
         run: |
           echo "=========================================="
-          echo "🚀 简化版趋势跟踪系统 (无 LLM)"
+          echo "📈 大盘复盘"
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          
+
           # 构建命令行参数
-          FORCE_RUN_ARG=""
+          ARGS=""
+
+          if [ -n "${{ github.event.inputs.region }}" ]; then
+            ARGS="$ARGS --region ${{ github.event.inputs.region }}"
+            echo "🌐 指定地区: ${{ github.event.inputs.region }}"
+          fi
+
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
-            FORCE_RUN_ARG="--force-run"
+            ARGS="$ARGS --force-run"
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
-          # 执行分析
-          python main_simple.py $FORCE_RUN_ARG
-      
-      - name: 上传分析报告
+          python market_review.py $ARGS
+
+      - name: 上传日志
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: simple-analysis-reports-${{ github.run_number }}
-          path: reports/
-          retention-days: 30
-      
+          name: market-review-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 14
+
       - name: 显示运行结果
         if: always()
         run: |
           echo ""
           echo "=========================================="
-          echo "📊 分析完成"
+          echo "📊 复盘完成"
           echo "=========================================="
           if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
             echo "生成的报告:"
             ls -la reports/
-          else
-            echo "⚠️ 未生成报告文件"
           fi
           echo ""
-          if [ -f "logs/stock_analysis_simple_$(date +%Y%m%d).log" ]; then
-            echo "📜 最近日志（最后 30 行）:"
-            tail -30 logs/stock_analysis_simple_*.log 2>/dev/null || echo "无日志"
-          fi
+          echo "📜 最近日志（最后 30 行）:"
+          tail -30 logs/market_review_*.log 2>/dev/null || echo "无日志"

@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-简化版趋势跟踪系统 - 无 LLM 版本
+博弈仓 — 趋势跟踪系统（无 LLM 版本）
 ===================================
+
+定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。
 
 职责：
 1. 读取妙想自选股，同步到本地数据库
-2. 纯技术分析（缩量回踩 MA5 等规则）
-3. 找出符合条件的股票，发送通知
-4. 模拟交易执行（基于技术信号的自动化交易）
+2. 市场环境过滤（满足2/5条件才允许开仓）
+3. 纯技术分析（第一次分歧回踩MA5等规则）
+4. 模拟交易执行（基于博弈仓策略的自动化交易）
 
-特点：
-- 不调用 LLM，节省 API 额度
-- 纯本地计算，速度快
-- 规则明确，可回测验证
-- 集成模拟交易功能
+核心策略：
+- 买点：主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）
+- 不做：加速追高、情绪高潮接力、连续大阳后追涨
+- 第一卖点(减仓50%)：放量跌破5日线 / 高位长阴 / 回撤≥5%
+- 第二卖点(清仓)：跌破10日线 / 放量跌破10日线
+- 环境过滤：满足2/5项市场条件才允许开仓，否则空仓
+- 趋势不走坏即保留，连续2天跌破10日线才剔除
 
 使用方式：
     python main_simple.py              # 正常运行
@@ -42,6 +46,7 @@ from src.notification import NotificationService
 from src.services.mx_service import MXService
 from src.storage import get_db, WatchList
 from src.stock_analyzer import StockTrendAnalyzer
+from market_review import check_market_gate
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -78,9 +83,6 @@ class SimpleTechnicalAnalyzer:
     # 续命条件：涨幅在 3%-7% 之间
     RENEW_MIN_PCT = 3.0
     RENEW_MAX_PCT = 7.0
-    
-    # 最大跟踪交易日天数
-    MAX_TRADING_DAYS = 3
     
     def __init__(self):
         self.db = get_db()
@@ -195,58 +197,63 @@ class SimpleTechnicalAnalyzer:
             ).scalars().all()
             return [(r.code, r.remove_reason) for r in results]
     
+    # check_market_environment 已迁移至 market_review.check_market_gate()
+
     def should_remove_stock(self, watch_item: WatchList, df: Optional[pd.DataFrame] = None) -> Tuple[bool, str]:
         """
-        检查股票是否应该剔除
-        
+        检查股票是否应该剔除（基于博弈仓策略）
+
         剔除规则：
-        1. 加入自选超过3个交易日（使用交易日历计算）
-        2. 收盘跌破10日线
-        
+        1. 连续2天收盘跌破10日线
+        2. 放量长阴破趋势（单日放量暴跌破位）
+
         Args:
             watch_item: WatchList 记录
             df: 可选，已预先拉取的行情数据；传入则跳过内部拉取，避免重复请求
-            
+
         Returns:
             (是否剔除, 剔除原因)
         """
         code = watch_item.code
-        today = date.today()
-        
-        # 获取有效日期（续命日期或加入日期）
-        effective_date = watch_item.get_effective_date()
-        
-        # 规则1：检查加入自选的交易日天数
-        # 获取从有效日期到今天的交易日列表
-        trading_dates = self.get_trading_dates(effective_date, today)
-        if not trading_dates:
-            # 无法获取交易日历，跳过此规则（不剔除），但记录警告
-            logger.warning(f"⚠️ {code} 无法获取交易日历，跳过天数检查")
-        else:
-            # 排除有效日期当天，只计算之后的天数
-            trading_days = len([d for d in trading_dates if d > effective_date])
-            
-            if trading_days > self.MAX_TRADING_DAYS:
-                return True, f"跟踪超过{self.MAX_TRADING_DAYS}个交易日（已{trading_days}天）"
-        
-        # 规则2：收盘跌破10日线
+
         try:
             if df is None:
                 df = self.fetch_stock_data(code, days=30)
             if df is not None and len(df) >= 10:
                 df = df.sort_values('date').reset_index(drop=True)
                 df = self.trend_analyzer._calculate_mas(df)
+
+                if len(df) < 2:
+                    return False, ""
+
                 latest = df.iloc[-1]
-                
+                prev = df.iloc[-2]
+
                 close = latest.get('close')
+                prev_close = prev.get('close')
                 ma10 = latest.get('ma10')
-                
-                if close is not None and ma10 is not None and not pd.isna(ma10):
-                    if close < ma10:
-                        return True, f"收盘跌破10日线（收盘价:{close:.2f} < MA10:{ma10:.2f}）"
+                prev_ma10 = prev.get('ma10')
+                volume = latest.get('volume', 0)
+                prev_volume = prev.get('volume', 1)
+                volume_ratio = volume / prev_volume if prev_volume > 0 else 1
+
+                # 规则1：连续2天收盘跌破10日线
+                if (close is not None and ma10 is not None and not pd.isna(ma10) and
+                    prev_close is not None and prev_ma10 is not None and not pd.isna(prev_ma10)):
+                    if close < ma10 and prev_close < prev_ma10:
+                        return True, f"连续2天收盘跌破10日线（昨{prev_close:.2f}<{prev_ma10:.2f}，今{close:.2f}<{ma10:.2f}）"
+
+                # 规则2：放量长阴破趋势（单日放量暴跌，跌幅≥5%且量比≥2）
+                if close is not None and prev_close is not None and prev_close > 0:
+                    pct_change = (close - prev_close) / prev_close * 100
+                    if (pct_change <= -5 and volume_ratio >= 2 and
+                        ma10 is not None and not pd.isna(ma10) and
+                        close < ma10):
+                        return True, f"放量长阴破趋势（跌幅{pct_change:.1f}%，量比{volume_ratio:.1f}）"
+
         except Exception as e:
             logger.debug(f"检查 {code} 剔除条件时出错: {e}")
-        
+
         return False, ""
     
     def remove_stocks(self, codes_to_remove: List[Tuple[str, str]]):
@@ -362,79 +369,90 @@ class SimpleTechnicalAnalyzer:
     
     def detect_signals(self, code: str, name: str, df: pd.DataFrame) -> List[TechnicalSignal]:
         """
-        检测技术信号
-        
-        目前支持的信号：
-        1. 缩量回踩 MA5（最佳买点）
-        2. 缩量回踩 MA10（次优买点）
-        3. 放量突破（趋势加速）
-        
-        关键修复：
-        - 回踩信号：允许价格触碰/微破MA5，只要守住MA10
-        - 添加涨跌幅过滤：拒绝大阴线和大阳线（极品洗盘是小实体）
+        检测技术信号（基于博弈仓策略）
+
+        博弈仓定位：趋势波段系统，只做主线中的强趋势股，只在分歧回踩时介入。
+
+        信号优先级：
+        1. 缩量回踩 MA5（主升中的第一次像样分歧）— 最佳买点
+        2. 缩量回踩 MA10（次优买点，但需谨慎）
+
+        不做：加速追高、情绪高潮接力、连续大阳后追涨。
         """
         signals = []
-        
+
         if df is None:
             logger.warning(f"⚠️ {name}({code}): 数据为空，跳过分析")
             return signals
-        
+
         if len(df) < 20:
             logger.warning(f"⚠️ {name}({code}): 数据不足20条(仅{len(df)}条)，可能影响分析准确性")
-        
+
         df = df.sort_values('date').reset_index(drop=True)
         df = self.trend_analyzer._calculate_mas(df)
-        
+
         # 取最新数据
         latest = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else None
-        
+
         current_price = latest['close']
         ma5 = latest['ma5']
         ma10 = latest['ma10']
         ma20 = latest['ma20']
         _vr = latest.get('volume_ratio')
         volume_ratio = float(_vr) if _vr is not None and pd.notna(_vr) else 1.0
-        
+
         if pd.isna(ma5) or pd.isna(ma10) or pd.isna(ma20):
             return signals
-        
+
         # 计算乖离率
         bias_ma5 = (current_price - ma5) / ma5 * 100 if ma5 > 0 else 0
-        
+        bias_ma10 = (current_price - ma10) / ma10 * 100 if ma10 > 0 else 0
+
         # 计算当日涨跌幅
         pct_change = 0.0
         if prev is not None and prev['close'] > 0:
             pct_change = (current_price - prev['close']) / prev['close'] * 100
-        
-        # 判断趋势状态
-        # 严格多头排列：价格在所有均线之上
-        is_strict_bullish = current_price > ma5 > ma10 > ma20
-        
-        # 宽松多头排列：均线本身多头排列，价格守住MA10（允许回踩触碰MA5）
-        is_loose_bullish = ma5 > ma10 > ma20 and current_price > ma10
-        
-        # 判断是否为小实体（极品洗盘特征）
-        is_small_body = abs(pct_change) < 3.0
-        
-        # 获取昨天成交量（用于环比缩量判断）
+
+        # === 博弈仓策略检查 ===
+
+        # 1. 均线多头排列：5日线 > 10日线 > 20日线
+        is_bullish_alignment = ma5 > ma10 > ma20
+
+        # 2. 不破5日线（或盘中破但尾盘收回）
+        holds_ma5 = current_price >= ma5 * 0.995  # 允许微破
+
+        # 3. 选股池条件：换手率 > 5%（保证活跃度）
+        turnover = latest.get('turnover_rate', 0)
+        meets_liquidity = turnover > 5.0
+
+        # 4. 非连续加速状态：检查最近3天涨幅是否逐渐缩小（分歧特征）
+        is_accelerating = False
+        if len(df) >= 4:
+            day1 = (df.iloc[-1]['close'] - df.iloc[-2]['close']) / df.iloc[-2]['close'] * 100
+            day2 = (df.iloc[-2]['close'] - df.iloc[-3]['close']) / df.iloc[-3]['close'] * 100
+            day3 = (df.iloc[-3]['close'] - df.iloc[-4]['close']) / df.iloc[-4]['close'] * 100
+            if day1 > day2 > day3 and day3 > 0:
+                is_accelerating = True
+
+        # 5. 缩量检查：环比缩量 + 量比 < 0.8（断崖式缩量特征）
         prev_volume = prev['volume'] if prev is not None else 0
         current_volume = latest['volume']
-        
-        # 环比缩量：今天成交量比昨天萎缩至少 30%（断崖式缩量）
         is_volume_shrink = (current_volume < prev_volume * 0.7) and (volume_ratio < 0.8)
-        
-        # 获取换手率（用于放量突破判断）
-        turnover = latest.get('turnover_rate', 0)
-        
-        # 信号1: 缩量回踩 MA5（最佳买点）
-        # 条件：宽松多头排列 + 环比缩量（断崖式）+ 贴近 MA5 + 小实体
-        if is_loose_bullish and is_volume_shrink and abs(bias_ma5) < 2.0 and is_small_body:
+
+        # 只有均线多头排列的股票才有分析意义
+        if not is_bullish_alignment:
+            return signals
+
+        # 信号1: 缩量回踩 MA5（主升中的第一次分歧回踩）— 最佳买点
+        # 条件：多头排列 + 守住MA5 + 缩量 + 小实体/小跌 + 换手达标 + 非加速
+        if (holds_ma5 and is_volume_shrink and abs(bias_ma5) < 2.0
+                and abs(pct_change) < 3.0 and meets_liquidity and not is_accelerating):
             signals.append(TechnicalSignal(
                 code=code,
                 name=name,
                 signal_type='pullback_ma5',
-                score=90,  # 极品信号，提高评分
+                score=90,
                 current_price=current_price,
                 ma5=ma5,
                 ma10=ma10,
@@ -442,18 +460,22 @@ class SimpleTechnicalAnalyzer:
                 bias_ma5=bias_ma5,
                 volume_ratio=volume_ratio,
                 turnover_rate=turnover,
-                description=f"断崖缩量回踩MA5，量比{volume_ratio:.2f}，环比缩量{(1-current_volume/prev_volume)*100:.0f}%，涨跌{pct_change:+.2f}%"
+                description=f"第一次分歧回踩MA5，缩量（量比{volume_ratio:.2f}）不破5日线，涨跌{pct_change:+.2f}%"
             ))
-        
-        # 信号2: 缩量回踩 MA10（次优买点）
-        # 条件：宽松多头排列 + 环比缩量 + 价格在MA10窄幅区间(-2%~+3%) + 小实体
-        # 修复：添加上限防止强势横盘股被误判为回踩MA10
-        elif is_loose_bullish and is_volume_shrink and (ma10 * 0.98 < current_price < ma10 * 1.03) and is_small_body:
+
+        # 信号2: 缩量回踩 MA10（次优买点 — 回踩较深，需确认支撑）
+        # 策略强调"不破5日线"，回踩MA10说明分歧较大，评分降低
+        elif (is_volume_shrink
+              and (-3.0 < bias_ma10 < 1.0)  # 接近或微破MA10
+              and abs(pct_change) < 3.0
+              and meets_liquidity
+              and not is_accelerating
+              and not holds_ma5):  # 确实跌破了MA5
             signals.append(TechnicalSignal(
                 code=code,
                 name=name,
                 signal_type='pullback_ma10',
-                score=75,
+                score=65,  # 策略偏谨慎，回踩MA10评分降低
                 current_price=current_price,
                 ma5=ma5,
                 ma10=ma10,
@@ -461,27 +483,11 @@ class SimpleTechnicalAnalyzer:
                 bias_ma5=bias_ma5,
                 volume_ratio=volume_ratio,
                 turnover_rate=turnover,
-                description=f"断崖缩量回踩MA10，量比{volume_ratio:.2f}，环比缩量{(1-current_volume/prev_volume)*100:.0f}%"
+                description=f"回踩MA10（回踩较深），缩量（量比{volume_ratio:.2f}），涨跌{pct_change:+.2f}%，需次日弱转强确认"
             ))
-        
-        # 信号3: 放量突破（趋势加速）
-        # 条件：严格多头排列 + 放量 + 换手率>5%（保证活跃度）+ 乖离率适中（不追高）
-        elif is_strict_bullish and volume_ratio > 1.5 and turnover > 5.0 and bias_ma5 > 0 and bias_ma5 < 5:
-            signals.append(TechnicalSignal(
-                code=code,
-                name=name,
-                signal_type='breakout',
-                score=80,
-                current_price=current_price,
-                ma5=ma5,
-                ma10=ma10,
-                ma20=ma20,
-                bias_ma5=bias_ma5,
-                volume_ratio=volume_ratio,
-                turnover_rate=turnover,
-                description=f"放量突破，量能放大{volume_ratio:.2f}倍，换手率{turnover:.2f}%，涨跌{pct_change:+.2f}%"
-            ))
-        
+
+        # 注意：不放量突破信号 — 策略明确规定"不做加速追高"
+
         return signals
     
     def analyze_all_stocks(self, watch_list: List[WatchList]) -> Tuple[List[TechnicalSignal], List[Tuple[str, str]]]:
@@ -567,36 +573,54 @@ class SimpleTechnicalAnalyzer:
         logger.info(f"处理完成 | 保留:{kept_count} 剔除:{len(removed_stocks)} 信号:{len(all_signals)}")
         return all_signals, removed_stocks
     
-    def generate_report(self, signals: List[TechnicalSignal], removed_stocks: List[Tuple[str, str]] = None) -> str:
+    def generate_report(self, signals: List[TechnicalSignal], removed_stocks: List[Tuple[str, str]] = None,
+                        market_env: Optional[Tuple[bool, Dict[str, bool], str]] = None) -> str:
         """
-        生成 Markdown 格式的报告
-        
+        生成 Markdown 格式的报告（基于博弈仓策略）
+
         Args:
             signals: 技术信号列表
             removed_stocks: 被剔除的股票列表 [(code, reason), ...]
+            market_env: 市场环境检查结果 (can_trade, conditions, summary)
         """
         removed_stocks = removed_stocks or []
         today_str = datetime.now().strftime('%Y-%m-%d')
-        
+
         lines = [
-            f"# 📊 技术分析日报 ({today_str})",
+            f"# 📊 博弈仓 — 趋势跟踪日报 ({today_str})",
+            "",
+            f"> 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。",
             "",
             f"> 共发现 **{len(signals)}** 个技术信号 | 剔除 **{len(removed_stocks)}** 只股票",
             "",
             "---",
             "",
         ]
-        
+
+        # 市场环境检查
+        if market_env:
+            can_trade, conditions, _ = market_env
+            env_icon = "✅" if can_trade else "⛔"
+            lines.extend([
+                "## 🌤️ 市场环境过滤",
+                "",
+                f"> **{env_icon} {'允许开仓' if can_trade else '建议空仓'}**（满足{sum(1 for v in conditions.values() if v)}/5项条件）",
+                "",
+            ])
+            for cond_name, met in conditions.items():
+                icon = "✅" if met else ("❌" if met is not None else "➖")
+                lines.append(f"- {icon} {cond_name}")
+            lines.extend(["", "---", ""])
+
         # 显示剔除的股票
         if removed_stocks:
             lines.extend([
-                "## ❌ 剔除股票",
+                "## ❌ 剔除股票（趋势破坏）",
                 "",
                 "| 股票 | 剔除原因 |",
                 "|------|----------|",
             ])
-            for code, reason in removed_stocks[:20]:  # 最多显示20个
-                # 尝试从数据库获取名称
+            for code, reason in removed_stocks[:20]:
                 with self.db.get_session() as session:
                     watch_item = session.execute(
                         select(WatchList).where(WatchList.code == code)
@@ -606,41 +630,45 @@ class SimpleTechnicalAnalyzer:
             if len(removed_stocks) > 20:
                 lines.append(f"| ... | 等共{len(removed_stocks)}只股票 |")
             lines.extend(["", "---", ""])
-        
+
         # 分类展示
-        pullback_signals = [s for s in signals if 'pullback' in s.signal_type]
-        breakout_signals = [s for s in signals if s.signal_type == 'breakout']
-        
-        # 缩量回踩（高优先级）
-        if pullback_signals:
+        pullback_ma5_signals = [s for s in signals if s.signal_type == 'pullback_ma5']
+        pullback_ma10_signals = [s for s in signals if s.signal_type == 'pullback_ma10']
+
+        # 第一次分歧回踩MA5（高优先级 — 策略首选买点）
+        if pullback_ma5_signals:
             lines.extend([
-                "## 🎯 缩量回踩买点（高优先级）",
+                "## 🎯 第一次分歧回踩MA5（策略首选买点）",
                 "",
-                "| 股票 | 价格 | MA5 | 乖离率 | 量比 | 评分 | 描述 |",
-                "|------|------|-----|--------|------|------|------|",
+                "> 只做主升中的第一次像样分歧。缩量回踩，不破5日线。",
+                "",
+                "| 股票 | 价格 | MA5 | MA10 | 乖离率 | 量比 | 换手率 | 评分 | 描述 |",
+                "|------|------|-----|------|--------|------|--------|------|------|",
             ])
-            for s in pullback_signals:
+            for s in pullback_ma5_signals:
                 lines.append(
-                    f"| {s.name}({s.code}) | {s.current_price:.2f} | {s.ma5:.2f} | "
-                    f"{s.bias_ma5:+.2f}% | {s.volume_ratio:.2f} | {s.score} | {s.description} |"
+                    f"| {s.name}({s.code}) | {s.current_price:.2f} | {s.ma5:.2f} | {s.ma10:.2f} | "
+                    f"{s.bias_ma5:+.2f}% | {s.volume_ratio:.2f} | {s.turnover_rate:.1f}% | {s.score} | {s.description} |"
                 )
             lines.append("")
-        
-        # 放量突破
-        if breakout_signals:
+
+        # 回踩MA10（次优 — 需谨慎，策略要求不破5日线）
+        if pullback_ma10_signals:
             lines.extend([
-                "## 🚀 放量突破",
+                "## ⚠️ 回踩MA10（次优 — 需次日弱转强确认）",
                 "",
-                "| 股票 | 价格 | MA5 | 乖离率 | 量比 | 评分 | 描述 |",
-                "|------|------|-----|--------|------|------|------|",
+                "> 已跌破5日线，回踩较深。策略要求不破5日线，此信号仅作参考。",
+                "",
+                "| 股票 | 价格 | MA5 | MA10 | 乖离率MA5 | 量比 | 换手率 | 评分 | 描述 |",
+                "|------|------|-----|------|-----------|------|--------|------|------|",
             ])
-            for s in breakout_signals:
+            for s in pullback_ma10_signals:
                 lines.append(
-                    f"| {s.name}({s.code}) | {s.current_price:.2f} | {s.ma5:.2f} | "
-                    f"{s.bias_ma5:+.2f}% | {s.volume_ratio:.2f} | {s.score} | {s.description} |"
+                    f"| {s.name}({s.code}) | {s.current_price:.2f} | {s.ma5:.2f} | {s.ma10:.2f} | "
+                    f"{s.bias_ma5:+.2f}% | {s.volume_ratio:.2f} | {s.turnover_rate:.1f}% | {s.score} | {s.description} |"
                 )
             lines.append("")
-        
+
         # 汇总
         lines.extend([
             "---",
@@ -648,21 +676,23 @@ class SimpleTechnicalAnalyzer:
             "## 📈 信号汇总",
             "",
         ])
-        
-        for s in signals[:10]:  # 只显示前10个
+
+        for s in signals[:10]:
             emoji = "🟢" if s.score >= 80 else "🟡" if s.score >= 60 else "⚪"
             lines.append(f"{emoji} **{s.name}({s.code})**: {s.description} | 评分:{s.score}")
-        
+
         lines.extend([
             "",
             "---",
             "",
-            "**检测规则**:",
-            "- 缩量回踩MA5: 多头排列 + 量比<0.8 + 乖离率<2%",
-            "- 缩量回踩MA10: 多头排列 + 量比<0.8 + 价格接近MA10",
-            "- 放量突破: 多头排列 + 量比>1.5 + 乖离率2-5%",
+            "**博弈仓策略规则**:",
+            "- 买点: 主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）",
+            "- 不做: 加速追高、情绪高潮接力、连续大阳后追涨",
+            "- 第一卖点(减仓50%): 放量跌破5日线 / 高位长阴 / 回撤≥5%",
+            "- 第二卖点(清仓): 跌破10日线 / 放量跌破10日线",
+            "- 环境过滤: 满足2/5项市场条件才允许开仓，否则空仓",
         ])
-        
+
         return "\n".join(lines)
 
 
@@ -798,40 +828,93 @@ class TradeDecisionHelper:
                             current_price: float,
                             ma10: float,
                             ma5: float,
-                            cost_price: float) -> SellCondition:
-        """检查卖出条件"""
+                            cost_price: float,
+                            volume_ratio: float = 1.0,
+                            pct_change: float = 0.0,
+                            position_high: Optional[float] = None) -> SellCondition:
+        """
+        检查卖出条件（基于博弈仓策略）
+
+        第一卖点（减仓50%）：
+        - 放量跌破5日线
+        - 高位长阴吞没
+        - 从阶段高点回撤≥5%
+        - 板块明显走弱
+
+        第二卖点（全仓清仓）：
+        - 连续2日收盘跌破10日线（盘中只能检查当日情况）
+        - 放量跌破10日线
+        - 主线明显退潮
+        - 个股跌破关键平台
+
+        止盈保护：盈利≥15%且放量滞涨，主动止盈半仓
+        """
         profit_pct = (current_price - cost_price) / cost_price * 100
 
-        if current_price < ma10 * 0.995:
+        # --- 极端止损（盘中直接走）---
+        if pct_change <= -7:
             return SellCondition(
                 should_sell=True,
-                reason=f"止损：跌破MA10生命线({current_price:.2f} < {ma10:.2f})",
+                reason=f"极端止损：闪崩暴跌{pct_change:.1f}%",
+                sell_price=current_price,
+                sell_ratio=1.0
+            )
+
+        # --- 第二卖点：全仓清仓 ---
+        # 放量跌破10日线（生命线失守）
+        if current_price < ma10 * 0.995 and volume_ratio > 1.5:
+            return SellCondition(
+                should_sell=True,
+                reason=f"放量跌破MA10生命线（价{current_price:.2f}<{ma10:.2f}，量比{volume_ratio:.2f}）",
                 sell_price=ma10,
                 sell_ratio=1.0
             )
 
-        if 3 <= profit_pct < 7:
+        # 跌破10日线（无论量能，生命线失守）
+        if current_price < ma10 * 0.99:
             return SellCondition(
                 should_sell=True,
-                reason=f"第一止盈：盈利{profit_pct:.2f}%，减仓50%",
-                sell_ratio=0.5
-            )
-
-        if profit_pct >= 7:
-            return SellCondition(
-                should_sell=True,
-                reason=f"第二止盈：盈利{profit_pct:.2f}%，清仓",
+                reason=f"跌破MA10生命线（{current_price:.2f} < {ma10:.2f}）",
+                sell_price=ma10,
                 sell_ratio=1.0
             )
 
-        if current_price < ma5 * 0.998:
+        # --- 止盈保护 ---
+        if profit_pct >= 15 and volume_ratio > 1.5 and pct_change < 1.0:
             return SellCondition(
                 should_sell=True,
-                reason=f"趋势走弱：跌破MA5({current_price:.2f} < {ma5:.2f})",
+                reason=f"止盈保护：盈利{profit_pct:.1f}%且放量滞涨（量比{volume_ratio:.2f}），止盈半仓",
                 sell_ratio=0.5
             )
 
-        return SellCondition(should_sell=False, reason="持仓中")
+        # --- 第一卖点：减仓50% ---
+        # 放量跌破5日线
+        if current_price < ma5 * 0.998 and volume_ratio > 1.5:
+            return SellCondition(
+                should_sell=True,
+                reason=f"放量跌破MA5（价{current_price:.2f}<{ma5:.2f}，量比{volume_ratio:.2f}），减仓50%",
+                sell_ratio=0.5
+            )
+
+        # 高位长阴吞没
+        if pct_change <= -5:
+            return SellCondition(
+                should_sell=True,
+                reason=f"高位长阴吞没（跌幅{pct_change:.1f}%），减仓50%",
+                sell_ratio=0.5
+            )
+
+        # 从阶段高点回撤≥5%
+        if position_high is not None and position_high > cost_price * 1.05:
+            drawdown = (position_high - current_price) / position_high * 100
+            if drawdown >= 5:
+                return SellCondition(
+                    should_sell=True,
+                    reason=f"从高点回撤{drawdown:.1f}%≥5%（高点{position_high:.2f}→现{current_price:.2f}），减仓50%",
+                    sell_ratio=0.5
+                )
+
+        return SellCondition(should_sell=False, reason="持仓中，趋势未破坏")
 
     def calculate_position_size(self,
                               available_funds: float,
@@ -847,13 +930,15 @@ class TradeDecisionHelper:
         return max_shares
 
     def generate_daily_plan(self) -> str:
-        """生成次日交易计划文本"""
+        """生成次日交易计划文本（基于博弈仓策略）"""
         candidates = self.get_buy_candidates()
 
         if not candidates:
-            return "📋 次日交易计划\n\n暂无符合条件的买入信号"
+            return "📋 博弈仓次日交易计划\n\n暂无符合条件的买入信号"
 
-        lines = ["📋 次日交易计划", "=" * 40]
+        lines = ["📋 博弈仓 — 次日交易计划", "=" * 40]
+        lines.append("")
+        lines.append("> 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。")
 
         for sig in candidates:
             code = sig['code']
@@ -862,12 +947,14 @@ class TradeDecisionHelper:
             ma10 = sig.get('ma10', 0)
 
             lines.append(f"\n🎯 {name}({code}) 评分:{sig['score']}")
-            lines.append(f"   买入区间: {ma10:.2f} ~ {ma5:.2f}")
-            lines.append(f"   买入条件: ①不跌破MA10 ②量比≤1.0 ③涨跌幅±3%内")
-            lines.append(f"   最佳时间: 9:40-10:00 或 14:30-15:00")
-            lines.append(f"   止损位: MA10={ma10:.2f}")
+            lines.append(f"   第一次分歧回踩: MA5={ma5:.2f}, MA10={ma10:.2f}")
+            lines.append(f"   买入区间: {ma10:.2f} ~ {ma5:.2f}（靠近MA5为佳）")
+            lines.append(f"   确认条件: ①不破5日线 ②缩量（量比≤1.0）③涨跌幅±3%内")
+            lines.append(f"   最佳时间: 9:40-10:00（激进）或 14:30-15:00（稳健）")
+            lines.append(f"   止损位: MA10={ma10:.2f}（收盘跌破清仓）")
 
         lines.append(f"\n⚠️ 放弃条件: 大盘跌超2% | 个股利空 | 持仓≥{self.MAX_HOLDINGS}只")
+        lines.append("⚠️ 不做: 加速追高、情绪高潮接力、连续大阳后追涨")
 
         return "\n".join(lines)
 
@@ -1078,7 +1165,10 @@ class TradingExecutor:
     def check_and_sell(self, position_code: str,
                       current_price: float,
                       current_ma5: float,
-                      current_ma10: float) -> Optional[Dict]:
+                      current_ma10: float,
+                      volume_ratio: float = 1.0,
+                      pct_change: float = 0.0,
+                      position_high: Optional[float] = None) -> Optional[Dict]:
         """检查持仓卖出条件并执行"""
         positions = self.portfolio.get_positions()
         position = None
@@ -1091,7 +1181,11 @@ class TradingExecutor:
             return None
 
         sell_condition = self.decision_helper.check_sell_conditions(
-            position, current_price, current_ma10, current_ma5, position['cost_price']
+            position, current_price, current_ma10, current_ma5,
+            position['cost_price'],
+            volume_ratio=volume_ratio,
+            pct_change=pct_change,
+            position_high=position_high or position.get('high_price'),
         )
 
         if not sell_condition.should_sell:
@@ -1271,7 +1365,9 @@ def run_trade_execute():
                 position_code=pos['code'],
                 current_price=rt['price'],
                 current_ma5=rt['ma5'] if rt['ma5'] else rt['price'],
-                current_ma10=rt['ma10']
+                current_ma10=rt['ma10'],
+                volume_ratio=rt['volume_ratio'] if rt.get('volume_ratio') else 1.0,
+                pct_change=rt.get('change_pct', 0.0),
             )
 
             if sell_result:
@@ -1429,8 +1525,12 @@ def main():
             else:
                 logger.warning(f"从妙想删除失败")
         
-        # 7. 生成报告
-        report = analyzer.generate_report(signals, removed_stocks)
+        # 7. 检查市场环境并生成报告
+        can_trade, market_conditions, market_summary = check_market_gate()
+        logger.info(market_summary)
+
+        report = analyzer.generate_report(signals, removed_stocks,
+                                          market_env=(can_trade, market_conditions, market_summary))
         
         # 保存报告
         reports_dir = "reports"
