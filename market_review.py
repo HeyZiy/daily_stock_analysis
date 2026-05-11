@@ -19,10 +19,11 @@ A股自选股智能分析系统 - 大盘复盘独立入口
 import sys
 import argparse
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from src.config import setup_env, get_config, Config
 from src.logging_config import setup_logging
+from src.services.mx_service import MXService
 
 setup_env()
 
@@ -202,16 +203,58 @@ def _detect_regime(index_df, met_count: int) -> str:
     return "unknown"
 
 
-def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str]:
+def _parse_mx_theme_result(result: Optional[Dict]) -> Tuple[bool, str]:
+    """解析 MX search_news 返回值，判断是否有明确市场主线
+
+    Returns:
+        (是否有主线, 描述文本)
+    """
+    if not result or result.get("status") != 0:
+        return False, "妙想资讯查询无结果"
+
+    data = result.get("data", {})
+    inner = data.get("data", {})
+    search_resp = inner.get("llmSearchResponse", {})
+    items = search_resp.get("data", [])
+    if not isinstance(items, list) or not items:
+        return False, "未找到相关市场主线资讯"
+
+    # 收集提及的板块/概念关键词
+    sector_keywords = {"板块", "概念", "行业", "主线", "热点", "领涨",
+                       "AI", "人工智能", "半导体", "新能源", "消费", "医药",
+                       "金融", "科技", "芯片", "算力", "汽车", "光伏"}
+    mentioned = set()
+    titles = []
+    for item in items:
+        title = item.get("title", "")
+        content = item.get("content", "")
+        text = f"{title} {content}"
+        titles.append(title)
+        for kw in sector_keywords:
+            if kw in text:
+                mentioned.add(kw)
+
+    desc = "；".join(titles[:3]) if titles else "未识别"
+    # 有至少 2 条结果且提到了板块关键词 → 认为有主线
+    has_theme = len(items) >= 2 and len(mentioned) >= 1
+    return has_theme, desc
+
+
+def check_market_gate(
+    mx_service: Optional['MXService'] = None,
+) -> Tuple[bool, Dict[str, bool], str, str]:
     """
     博弈仓策略 — 市场环境开仓门控
 
     满足两条件以上才允许开仓：
     1. 指数站上20日线（上证指数）
     2. 成交额高于近20日均量
-    3. 有明确持续主线（非一日游）— 暂无可靠数据源，跳过
+    3. 有明确持续主线（非一日游）
     4. 涨停家数明显高于跌停家数
-    5. 主线板块持续活跃3天以上 — 暂无可靠数据源，跳过
+    5. 主线板块持续活跃3天以上
+
+    Args:
+        mx_service: 妙想 API 服务（可选），配置后用于定性判断条件 3 和 5
 
     Returns:
         (can_trade, conditions_dict, summary_str, regime)
@@ -224,9 +267,9 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str]:
     conditions: Dict[str, bool] = {
         "指数站上20日线":   False,
         "成交额高于近20日均量": False,
-        "有明确持续主线":   False,   # 需外部数据，暂跳过
+        "有明确持续主线":   False,
         "涨停多于跌停":    False,
-        "板块持续活跃3天":  False,   # 需外部数据，暂跳过
+        "板块持续活跃3天":  False,
     }
     met_count = 0
     details = []
@@ -277,9 +320,28 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str]:
         except Exception:
             details.append("⚠️ 获取涨跌停数据失败，跳过此项")
 
-        # 条件3 & 5：暂无可靠数据源，跳过
-        details.append("➖ 持续主线（暂无数据源，跳过）")
-        details.append("➖ 板块活跃3天（暂无数据源，跳过）")
+        # 条件3 & 5：使用妙想资讯定性判断（可选）
+        if mx_service and mx_service.api_key:
+            theme_result = mx_service.search_news("今日A股市场主线板块")
+            has_theme, theme_desc = _parse_mx_theme_result(theme_result)
+            conditions["有明确持续主线"] = has_theme
+            if has_theme:
+                met_count += 1
+                details.append(f"✅ 有明确持续主线: {theme_desc}")
+            else:
+                details.append(f"ℹ️ 未识别出明确主线: {theme_desc}")
+
+            persist_result = mx_service.search_news("近三日持续活跃板块")
+            has_persist, persist_desc = _parse_mx_theme_result(persist_result)
+            conditions["板块持续活跃3天"] = has_persist
+            if has_persist:
+                met_count += 1
+                details.append(f"✅ 板块持续活跃: {persist_desc}")
+            else:
+                details.append(f"ℹ️ 板块持续性不足: {persist_desc}")
+        else:
+            details.append("➖ 持续主线（未配置MX_APIKEY，跳过）")
+            details.append("➖ 板块活跃3天（未配置MX_APIKEY，跳过）")
 
     except Exception as e:
         logger.error(f"市场门控检查失败: {e}")

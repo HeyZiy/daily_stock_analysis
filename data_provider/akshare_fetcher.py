@@ -364,9 +364,9 @@ class AkshareFetcher(BaseFetcher):
         """
         # 尝试列表
         methods = [
-            (self._fetch_stock_data_em, "东方财富"),
             (self._fetch_stock_data_sina, "新浪财经"),
             (self._fetch_stock_data_tx, "腾讯财经"),
+            (self._fetch_stock_data_em, "东方财富"),
         ]
 
         last_error = None

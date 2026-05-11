@@ -1,16 +1,16 @@
 ﻿# -*- coding: utf-8 -*-
 """
 ===================================
-博弈仓 — 趋势跟踪系统（无 LLM 版本）
+趋势跟踪系统（无 LLM 版本）
 ===================================
 
 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。
 
 职责：
-1. 读取妙想自选股，同步到本地数据库
+1. 读取妙想自选股，直接进行技术分析
 2. 市场环境过滤（满足2/5条件才允许开仓）
 3. 纯技术分析（第一次分歧回踩MA5等规则）
-4. 模拟交易执行（基于博弈仓策略的自动化交易）
+4. 模拟交易执行
 
 核心策略：
 - 买点：主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）
@@ -38,13 +38,11 @@ from datetime import date, datetime, timedelta, time
 from typing import List, Dict, Optional, Tuple
 
 import pandas as pd
-from sqlalchemy import select, and_, desc
 
 from data_provider.base import DataFetcherManager, canonical_stock_code
 from src.config import setup_env
 from src.notification import NotificationService
 from src.services.mx_service import MXService
-from src.storage import get_db, WatchList
 from src.stock_analyzer import StockTrendAnalyzer
 from market_review import check_market_gate
 
@@ -80,12 +78,7 @@ class SimpleTechnicalAnalyzer:
     不依赖 LLM，纯技术指标计算
     """
     
-    # 续命条件：涨幅在 3%-7% 之间
-    RENEW_MIN_PCT = 3.0
-    RENEW_MAX_PCT = 7.0
-    
     def __init__(self):
-        self.db = get_db()
         self.fetcher = DataFetcherManager()
         self.mx_service = MXService()
         self.trend_analyzer = StockTrendAnalyzer()  # 复用 main.py 的技术指标计算
@@ -109,112 +102,24 @@ class SimpleTechnicalAnalyzer:
             # 【修改点】不要再做自然日近似了，直接抛出异常，让主程序报错退出！
             logger.error(f"严重错误：获取交易日历失败！无法进行后续精确计算。错误信息: {e}")
             raise RuntimeError("交易日历获取失败。")
-    
-    def sync_stocks_to_db(self, stock_codes: List[str], name_mapping: Dict[str, str]) -> Tuple[int, int, int]:
-        """
-        将股票同步到本地数据库的 WatchList 表
-        
-        - 新股票：记录加入时间
-        - 已有股票：更新 last_seen_date
-        - 续命检查：当日涨幅在 3%-7% 时重置计时器
-        - 不在列表中的股票：保持原样（由剔除逻辑处理）
-        
-        Returns:
-            (新增数量, 更新数量, 续命数量)
-        """
-        today = date.today()
-        added_count = 0
-        updated_count = 0
-        renewed_count = 0
-        
-        with self.db.session_scope() as session:
-            for code in stock_codes:
-                name = name_mapping.get(code, code)
-                
-                # 检查是否已存在
-                existing = session.execute(
-                    select(WatchList).where(
-                        WatchList.code == code
-                    )
-                ).scalar_one_or_none()
-                
-                if not existing:
-                    # 新股票，创建记录
-                    watch_item = WatchList(
-                        code=code,
-                        name=name,
-                        added_date=today,
-                        last_seen_date=today,
-                        status='active',
-                    )
-                    session.add(watch_item)
-                    logger.debug(f"新增关注股票: {code}")
-                    added_count += 1
-                else:
-                    # 已有股票，更新最后看到时间
-                    existing.last_seen_date = today
-                    existing.name = name  # 更新名称（可能变化）
-                    if existing.status != 'active':
-                        existing.status = 'active'  # 如果之前被移除了，重新激活
-                    
-                    # 续命检查移到技术分析阶段，避免重复拉取数据
-                    
-                    updated_count += 1
-                    logger.debug(f"更新关注股票: {code}")
-        
-        if added_count > 0 or updated_count > 0:
-            logger.info(f"同步完成 | 新增:{added_count} 更新:{updated_count} 续命:{renewed_count}")
-        
-        return added_count, updated_count, renewed_count
-    
-    def get_active_watch_list(self) -> List[WatchList]:
-        """
-        获取当前活跃的关注列表（用于分析）
-        
-        Returns:
-            活跃的 WatchList 记录列表
-        """
-        with self.db.get_session() as session:
-            results = session.execute(
-                select(WatchList).where(
-                    WatchList.status == 'active'
-                ).order_by(WatchList.added_date)
-            ).scalars().all()
-            return list(results)
-    
-    def get_removed_stocks(self) -> List[Tuple[str, str]]:
-        """
-        获取已被剔除的股票列表
-        
-        Returns:
-            [(code, reason), ...]
-        """
-        with self.db.get_session() as session:
-            results = session.execute(
-                select(WatchList).where(
-                    WatchList.status == 'removed'
-                ).order_by(desc(WatchList.updated_at))
-            ).scalars().all()
-            return [(r.code, r.remove_reason) for r in results]
-    
+
     # check_market_environment 已迁移至 market_review.check_market_gate()
 
-    def should_remove_stock(self, watch_item: WatchList, df: Optional[pd.DataFrame] = None) -> Tuple[bool, str]:
+    def should_remove_stock(self, code: str, df: Optional[pd.DataFrame] = None) -> Tuple[bool, str]:
         """
-        检查股票是否应该剔除（基于博弈仓策略）
+        检查股票是否应该剔除
 
         剔除规则：
         1. 连续2天收盘跌破10日线
         2. 放量长阴破趋势（单日放量暴跌破位）
 
         Args:
-            watch_item: WatchList 记录
+            code: 股票代码
             df: 可选，已预先拉取的行情数据；传入则跳过内部拉取，避免重复请求
 
         Returns:
             (是否剔除, 剔除原因)
         """
-        code = watch_item.code
 
         try:
             if df is None:
@@ -262,123 +167,52 @@ class SimpleTechnicalAnalyzer:
             logger.debug(f"检查 {code} 剔除条件时出错: {e}")
 
         return False, ""
-    
-    def remove_stocks(self, codes_to_remove: List[Tuple[str, str]]):
-        """
-        从本地数据库剔除股票（逻辑删除）
-        
-        Args:
-            codes_to_remove: [(code, reason), ...]
-        """
-        if not codes_to_remove:
-            return
-        
-        logger.info(f"开始剔除 {len(codes_to_remove)} 只股票...")
-        
-        with self.db.session_scope() as session:
-            for code, reason in codes_to_remove:
-                watch_item = session.execute(
-                    select(WatchList).where(
-                        and_(
-                            WatchList.code == code,
-                            WatchList.status == 'active'
-                        )
-                    )
-                ).scalar_one_or_none()
-                
-                if watch_item:
-                    watch_item.status = 'removed'
-                    watch_item.remove_reason = reason
-                    logger.info(f"❌ 剔除 {watch_item.name}({code}): {reason}")
-    
+
     def fetch_stock_data(self, code: str, days: int = 30) -> Optional[pd.DataFrame]:
         """
-        获取股票历史数据
-        
-        修复：检查数据新鲜度，如果最新数据早于昨天，强制从网络获取
-        
+        获取股票历史数据（直接从网络获取）
+
         Args:
             code: 股票代码
             days: 获取天数
-            
+
         Returns:
             DataFrame 或 None
         """
         try:
-            # 尝试从数据库获取
             end_date = date.today()
             start_date = end_date - timedelta(days=days)
-            
-            data = self.db.get_data_range(code, start_date, end_date)
-            
-            # 检查数据新鲜度：使用交易日历判断
-            need_refresh = True
-            latest_date = None
-            
-            if data:
-                latest_date = max(d.date for d in data)
-                
-                # 使用交易日历获取最近一个交易日（自动处理周末和节假日）
-                try:
-                    # 获取最近30天的交易日
-                    trading_dates = self.get_trading_dates(end_date - timedelta(days=30), end_date)
-                    if trading_dates:
-                        last_trading_day = trading_dates[-1]  # 最近一个交易日
-                        
-                        # 如果最新数据 >= 最近一个交易日，说明数据是新鲜的
-                        if latest_date >= last_trading_day:
-                            need_refresh = False
-                            logger.debug(f"{code} 本地数据新鲜(最新:{latest_date})，直接使用")
-                        else:
-                            logger.debug(f"{code} 本地数据过期(最新:{latest_date}, 需要:{last_trading_day}+)，从网络获取...")
-                    else:
-                        logger.debug(f"{code} 无法获取交易日历，默认从网络获取...")
-                except Exception as e:
-                    logger.debug(f"{code} 获取交易日历失败({e})，默认从网络获取...")
+            start_str = start_date.strftime('%Y-%m-%d')
+            end_str = end_date.strftime('%Y-%m-%d')
+
+            result = self.fetcher.get_daily_data(code, start_str, end_str)
+            if isinstance(result, tuple) and len(result) >= 1:
+                df = result[0]
             else:
-                logger.debug(f"{code} 本地无数据，从网络获取...")
-            
-            if need_refresh:
-                # 转换日期格式为字符串（某些数据源需要）
-                start_str = start_date.strftime('%Y-%m-%d')
-                end_str = end_date.strftime('%Y-%m-%d')
-                result = self.fetcher.get_daily_data(code, start_str, end_str)
-                # 返回的是 (df, source_name) 元组
-                if isinstance(result, tuple) and len(result) >= 1:
-                    df = result[0]
-                else:
-                    df = result
-                    
-                if df is not None and hasattr(df, 'empty') and not df.empty:
-                    # 验证数据新鲜度：最新数据必须 >= 最近一个交易日
-                    df_latest_date = pd.to_datetime(df['date'].max()).date()
-                    trading_dates = self.get_trading_dates(end_date - timedelta(days=30), end_date)
-                    if trading_dates:
-                        last_trading_day = trading_dates[-1]
-                        if df_latest_date < last_trading_day:
-                            logger.error(f"❌ {code} 网络获取的数据仍过期(最新:{df_latest_date}, 需要:{last_trading_day})，拒绝使用")
-                            return None
-                    
-                    # 保存到数据库
-                    self.db.save_daily_data(df, code, self.fetcher.__class__.__name__)
-                    return df
-                else:
-                    logger.error(f"❌ {code} 从网络获取数据失败，拒绝使用本地过期数据")
-                    return None
-            else:
-                # 转换为 DataFrame
-                df = pd.DataFrame([d.to_dict() for d in data])
+                df = result
+
+            if df is not None and hasattr(df, 'empty') and not df.empty:
+                df_latest_date = pd.to_datetime(df['date'].max()).date()
+                trading_dates = self.get_trading_dates(end_date - timedelta(days=30), end_date)
+                if trading_dates:
+                    last_trading_day = trading_dates[-1]
+                    if df_latest_date < last_trading_day:
+                        logger.error(f"❌ {code} 网络获取的数据仍过期(最新:{df_latest_date}, 需要:{last_trading_day})")
+                        return None
                 return df
-            
+            else:
+                logger.error(f"❌ {code} 从网络获取数据失败")
+                return None
+
         except Exception as e:
             logger.warning(f"获取 {code} 数据失败: {e}")
             return None
     
     def detect_signals(self, code: str, name: str, df: pd.DataFrame) -> List[TechnicalSignal]:
         """
-        检测技术信号（基于博弈仓策略）
+        检测技术信号
 
-        博弈仓定位：趋势波段系统，只做主线中的强趋势股，只在分歧回踩时介入。
+        趋势波段系统，只做主线中的强趋势股，只在分歧回踩时介入。
 
         信号优先级：
         1. 缩量回踩 MA5（主升中的第一次像样分歧）— 最佳买点
@@ -421,7 +255,7 @@ class SimpleTechnicalAnalyzer:
         if prev is not None and prev['close'] > 0:
             pct_change = (current_price - prev['close']) / prev['close'] * 100
 
-        # === 博弈仓策略检查 ===
+        # === 策略检查 ===
 
         # 1. 均线多头排列：5日线 > 10日线 > 20日线
         is_bullish_alignment = ma5 > ma10 > ma20
@@ -512,97 +346,61 @@ class SimpleTechnicalAnalyzer:
 
         return signals
     
-    def analyze_all_stocks(self, watch_list: List[WatchList]) -> Tuple[List[TechnicalSignal], List[Tuple[str, str]]]:
+    def analyze_all_stocks(self, stock_list: List[Tuple[str, str]]) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]]]:
         """
-        分析所有活跃的关注股票，返回技术信号列表和剔除列表
-        
-        流程：
-        1. 先检查剔除条件（加入天数、跌破MA10）
-        2. 对保留的股票进行技术分析
-        
+        分析所有关注股票，返回技术信号列表和剔除列表
+
         Args:
-            watch_list: 活跃的关注列表
-            
+            stock_list: [(code, name), ...]
+
         Returns:
-            (技术信号列表, 剔除列表)
+            (技术信号列表, [(code, name, 剔除原因), ...])
         """
         all_signals = []
         removed_stocks = []
-        
-        logger.info(f"开始处理 {len(watch_list)} 只关注股票...")
-        
-        for i, watch_item in enumerate(watch_list):
-            code = watch_item.code
-            name = watch_item.name or code
-            
+
+        logger.info(f"开始处理 {len(stock_list)} 只股票...")
+
+        for i, (code, name) in enumerate(stock_list):
             try:
-                # Step 1: 获取数据（供剔除检查和技术分析共用，避免重复拉取）
                 df = self.fetch_stock_data(code)
-                
-                # Step 2: 检查剔除条件（传入已拉取的 df，跳过内部重复请求）
-                should_remove, remove_reason = self.should_remove_stock(watch_item, df=df)
+
+                should_remove, remove_reason = self.should_remove_stock(code, df=df)
                 if should_remove:
-                    removed_stocks.append((code, remove_reason))
+                    removed_stocks.append((code, name, remove_reason))
                     logger.info(f"❌ 剔除 {name}({code}): {remove_reason}")
                     continue
-                
-                # Step 3: 获取数据并进行技术分析
+
                 if df is None:
                     continue
-                
-                # 检查续命条件（涨幅 3%-7%）
-                if len(df) >= 2:
-                    latest = df.iloc[-1]
-                    prev = df.iloc[-2]
-                    
-                    # 计算当日涨幅
-                    pct_change = (latest['close'] - prev['close']) / prev['close'] * 100
-                    
-                    # 续命条件：涨幅在 3%-7% 之间
-                    if self.RENEW_MIN_PCT <= pct_change <= self.RENEW_MAX_PCT:
-                        with self.db.session_scope() as session:
-                            # 使用行级锁（FOR UPDATE）避免并发更新冲突
-                            updated_item = session.execute(
-                                select(WatchList).where(
-                                    WatchList.code == code
-                                ).with_for_update()  # 添加行级锁
-                            ).scalar_one_or_none()
-                            if updated_item:
-                                today = date.today()
-                                updated_item.renewed_date = today
-                                updated_item.renew_count = (updated_item.renew_count or 0) + 1
-                                logger.info(f"🔄 {name}({code}) 续命！涨幅 {pct_change:.2f}%，重置计时器（第{updated_item.renew_count}次续命）")
-                
-                # 检测信号
+
                 signals = self.detect_signals(code, name, df)
                 all_signals.extend(signals)
-                
+
                 if signals:
                     logger.info(f"✅ {name}({code}): 发现 {len(signals)} 个信号")
-                
-                # 每10只打印进度
+
                 if (i + 1) % 10 == 0:
-                    logger.info(f"进度: {i + 1}/{len(watch_list)}")
-                
+                    logger.info(f"进度: {i + 1}/{len(stock_list)}")
+
             except Exception as e:
                 logger.warning(f"分析 {code} 失败: {e}")
                 continue
-        
-        # 按评分排序
+
         all_signals.sort(key=lambda x: x.score, reverse=True)
-        
-        kept_count = len(watch_list) - len(removed_stocks)
+
+        kept_count = len(stock_list) - len(removed_stocks)
         logger.info(f"处理完成 | 保留:{kept_count} 剔除:{len(removed_stocks)} 信号:{len(all_signals)}")
         return all_signals, removed_stocks
-    
-    def generate_report(self, signals: List[TechnicalSignal], removed_stocks: List[Tuple[str, str]] = None,
+
+    def generate_report(self, signals: List[TechnicalSignal], removed_stocks: Optional[List[Tuple[str, str, str]]] = None,
                         market_env: Optional[Tuple] = None) -> str:
         """
-        生成 Markdown 格式的报告（基于博弈仓策略）
+        生成 Markdown 格式的报告
 
         Args:
             signals: 技术信号列表
-            removed_stocks: 被剔除的股票列表 [(code, reason), ...]
+            removed_stocks: 被剔除的股票列表 [(code, name, reason), ...]
             market_env: 市场环境检查结果 (can_trade, conditions, summary, regime)
         """
         REGIME_DESC = {
@@ -615,7 +413,7 @@ class SimpleTechnicalAnalyzer:
         today_str = datetime.now().strftime('%Y-%m-%d')
 
         lines = [
-            f"# 📊 博弈仓 — 趋势跟踪日报 ({today_str})",
+            f"# 📊 趋势跟踪日报 ({today_str})",
             "",
             f"> 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。",
             "",
@@ -654,12 +452,7 @@ class SimpleTechnicalAnalyzer:
                 "| 股票 | 剔除原因 |",
                 "|------|----------|",
             ])
-            for code, reason in removed_stocks[:20]:
-                with self.db.get_session() as session:
-                    watch_item = session.execute(
-                        select(WatchList).where(WatchList.code == code)
-                    ).scalar_one_or_none()
-                    name = watch_item.name if watch_item else code
+            for code, name, reason in removed_stocks[:20]:
                 lines.append(f"| {name}({code}) | {reason} |")
             if len(removed_stocks) > 20:
                 lines.append(f"| ... | 等共{len(removed_stocks)}只股票 |")
@@ -719,7 +512,7 @@ class SimpleTechnicalAnalyzer:
             "",
             "---",
             "",
-            "**博弈仓策略规则**:",
+            "**策略规则**:",
             "- 买点: 主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）",
             "- 不做: 加速追高、情绪高潮接力、连续大阳后追涨",
             "- 第一卖点(减仓50%): 放量跌破5日线 / 高位长阴 / 回撤≥5%",
@@ -867,7 +660,7 @@ class TradeDecisionHelper:
                             pct_change: float = 0.0,
                             position_high: Optional[float] = None) -> SellCondition:
         """
-        检查卖出条件（基于博弈仓策略）
+        检查卖出条件
 
         第一卖点（减仓50%）：
         - 放量跌破5日线
@@ -964,13 +757,13 @@ class TradeDecisionHelper:
         return max_shares
 
     def generate_daily_plan(self) -> str:
-        """生成次日交易计划文本（基于博弈仓策略）"""
+        """生成次日交易计划文本"""
         candidates = self.get_buy_candidates()
 
         if not candidates:
-            return "📋 博弈仓次日交易计划\n\n暂无符合条件的买入信号"
+            return "📋 次日交易计划\n\n暂无符合条件的买入信号"
 
-        lines = ["📋 博弈仓 — 次日交易计划", "=" * 40]
+        lines = ["📋 次日交易计划", "=" * 40]
         lines.append("")
         lines.append("> 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。")
 
@@ -1346,16 +1139,8 @@ def run_trade_analysis():
     if not stock_codes:
         return "今日无符合条件的信号"
 
-    analyzer.sync_stocks_to_db(stock_codes, name_mapping)
-
-    active_watch_list = analyzer.get_active_watch_list()
-    if not active_watch_list:
-        return "今日无符合条件的信号"
-
-    signals, removed_stocks = analyzer.analyze_all_stocks(active_watch_list)
-
-    if removed_stocks:
-        analyzer.remove_stocks(removed_stocks)
+    stock_list = list(zip(stock_codes, [name_mapping.get(c, c) for c in stock_codes]))
+    signals, _ = analyzer.analyze_all_stocks(stock_list)
 
     if not signals:
         return "今日无符合条件的信号"
@@ -1536,31 +1321,25 @@ def main():
             logger.error("没有获取到股票列表，退出")
             return 1
         
-        # 2. 同步到本地数据库（记录加入时间，检查续命）
-        analyzer.sync_stocks_to_db(stock_codes, name_mapping)
-        
-        # 3. 获取当前活跃的关注列表
-        active_watch_list = analyzer.get_active_watch_list()
-        logger.info(f"当前活跃关注列表: {len(active_watch_list)} 只股票")
-        
-        # 4. 技术分析（包含剔除检查）
-        signals, removed_stocks = analyzer.analyze_all_stocks(active_watch_list)
-        
-        # 5. 记录剔除的股票到数据库
-        if removed_stocks:
-            analyzer.remove_stocks(removed_stocks)
-        
-        # 6. 从妙想删除剔除的股票（仅当不是命令行指定模式时）
+        # 2. 技术分析（包含剔除检查）
+        stock_list = list(zip(stock_codes, [name_mapping.get(c, c) for c in stock_codes]))
+        logger.info(f"当前关注列表: {len(stock_list)} 只股票")
+
+        signals, removed_stocks = analyzer.analyze_all_stocks(stock_list)
+
+        # 3. 从妙想删除剔除的股票（仅当不是命令行指定模式时）
         if removed_stocks and not args.stocks:
-            removed_codes = [code for code, _ in removed_stocks]
+            removed_codes = [code for code, _, _ in removed_stocks]
             success = analyzer.mx_service.remove_stocks(removed_codes)
             if success:
                 logger.info(f"已从妙想删除 {len(removed_codes)} 只自选股")
             else:
-                logger.warning(f"从妙想删除失败")
+                logger.warning("从妙想删除失败")
         
         # 7. 检查市场环境并生成报告
-        can_trade, market_conditions, market_summary, market_regime = check_market_gate()
+        can_trade, market_conditions, market_summary, market_regime = check_market_gate(
+            mx_service=analyzer.mx_service,
+        )
         logger.info(market_summary)
 
         report = analyzer.generate_report(signals, removed_stocks,

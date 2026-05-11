@@ -3,9 +3,6 @@
 .env.local
 .env.*.local
 
-# 允许提交加密的 .env.gpg 文件
-!.env.gpg
-
 # 测试文件（可能包含敏感配置）
 # 仅忽略仓库根目录下的临时 test_*.py 脚本；tests/ 目录下的单元测试需要纳入版本控制。
 /test_*.py
@@ -79,8 +76,4 @@ static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
 
-
-.workbuddy/
-/.codebuddy/automations/automation/memory.md
-/.codebuddy/automations/automation-2/memory.md
-/trading_plan.json
+skills/
