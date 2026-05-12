@@ -50,27 +50,6 @@ DEFAULT_AGENT_SKILLS = [
 ]
 
 
-def get_tool_registry():
-    """Return a cached ToolRegistry (built once, shared across requests)."""
-    global _TOOL_REGISTRY
-    if _TOOL_REGISTRY is not None:
-        return _TOOL_REGISTRY
-
-    from src.agent.tools.registry import ToolRegistry
-    from src.agent.tools.data_tools import ALL_DATA_TOOLS
-    from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
-    from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
-    from src.agent.tools.market_tools import ALL_MARKET_TOOLS
-    from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
-
-    registry = ToolRegistry()
-    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS:
-        registry.register(tool_fn)
-
-    _TOOL_REGISTRY = registry
-    logger.info("[AgentFactory] ToolRegistry cached (%d tools)", len(registry._tools) if hasattr(registry, "_tools") else -1)
-    return _TOOL_REGISTRY
-
 
 def get_skill_manager(config=None):
     """Return a deepcopy-clone of the cached SkillManager prototype.
@@ -112,75 +91,3 @@ def get_skill_manager(config=None):
     _SKILL_MANAGER_CUSTOM_DIR = current_custom_dir
     logger.info("[AgentFactory] SkillManager prototype cached (%d strategies)", len(skill_manager._skills))
     return copy.deepcopy(_SKILL_MANAGER_PROTOTYPE)
-
-
-def build_agent_executor(config=None, skills: Optional[List[str]] = None):
-    """Build and return a configured AgentExecutor (or future orchestrator).
-
-    When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
-    multiple specialised agents. Otherwise it returns the legacy single-agent
-    executor.
-
-    Args:
-        config: Application config object.  When *None*, ``get_config()`` is
-                called automatically.
-        skills: Strategy ids to activate.  When *None* falls back to
-                ``config.agent_skills``; if that is also empty falls back to
-                ``DEFAULT_AGENT_SKILLS``.
-
-    Returns:
-        A ready-to-call :class:`src.agent.executor.AgentExecutor` instance.
-    """
-    if config is None:
-        from src.config import get_config
-        config = get_config()
-
-    arch = getattr(config, "agent_arch", "single")
-
-    from src.agent.llm_adapter import LLMToolAdapter
-
-    registry = get_tool_registry()
-    skill_manager = get_skill_manager(config)
-
-    skills_to_activate = skills if skills is not None else (getattr(config, "agent_skills", None) or DEFAULT_AGENT_SKILLS)
-    skill_manager.activate(skills_to_activate if skills_to_activate else ["all"])
-    logger.info("[AgentFactory] Activated strategies: %s (arch=%s)", skills_to_activate, arch)
-
-    llm_adapter = LLMToolAdapter(config)
-
-    if arch == "multi":
-        return _build_orchestrator(config, registry, llm_adapter, skill_manager)
-
-    from src.agent.executor import AgentExecutor
-    return AgentExecutor(
-        tool_registry=registry,
-        llm_adapter=llm_adapter,
-        skill_instructions=skill_manager.get_skill_instructions(),
-        max_steps=getattr(config, "agent_max_steps", 10),
-    )
-
-
-def _build_orchestrator(config, registry, llm_adapter, skill_manager):
-    """Build and return an :class:`AgentOrchestrator` (multi-agent mode).
-
-    The orchestrator presents the same ``run()`` / ``chat()`` interface as
-    :class:`AgentExecutor` so callers need no changes.
-    """
-    from src.agent.orchestrator import AgentOrchestrator
-
-    mode = getattr(config, "agent_orchestrator_mode", "standard")
-    logger.info("[AgentFactory] Building AgentOrchestrator (mode=%s)", mode)
-
-    return AgentOrchestrator(
-        tool_registry=registry,
-        llm_adapter=llm_adapter,
-        skill_instructions=skill_manager.get_skill_instructions(),
-        max_steps=getattr(config, "agent_max_steps", 10),
-        mode=mode,
-        skill_manager=skill_manager,
-        config=config,
-    )
-
-
-# Keep legacy alias so any external callers using the old name still work.
-build_executor = build_agent_executor

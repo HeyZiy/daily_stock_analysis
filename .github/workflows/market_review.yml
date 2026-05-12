@@ -59,15 +59,6 @@ jobs:
       - name: 执行大盘复盘
         env:
           # ==========================================
-          # 搜索引擎配置（至少配置一个，否则降级运行）
-          # ==========================================
-          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
-          MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
-          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
-          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
-          SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS }}
-
-          # ==========================================
           # AI 模型配置（未配置则跳过 LLM 分析）
           # ==========================================
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -79,10 +70,11 @@ jobs:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
-          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
+
+          # ==========================================
+          # 数据源
+          # ==========================================
+          MX_APIKEY: ${{ secrets.MX_APIKEY }}
 
           # ==========================================
           # 系统配置

@@ -1098,56 +1098,6 @@ class DatabaseManager:
 
             return list(results)
 
-    def save_analysis_history(
-        self,
-        result: Any,
-        query_id: str,
-        report_type: str,
-        news_content: Optional[str],
-        context_snapshot: Optional[Dict[str, Any]] = None,
-        save_snapshot: bool = True
-    ) -> int:
-        """
-        保存分析结果历史记录
-        """
-        if result is None:
-            return 0
-
-        sniper_points = self._extract_sniper_points(result)
-        raw_result = self._build_raw_result(result)
-        context_text = None
-        if save_snapshot and context_snapshot is not None:
-            context_text = self._safe_json_dumps(context_snapshot)
-
-        record = AnalysisHistory(
-            query_id=query_id,
-            code=result.code,
-            name=result.name,
-            report_type=report_type,
-            sentiment_score=result.sentiment_score,
-            operation_advice=result.operation_advice,
-            trend_prediction=result.trend_prediction,
-            analysis_summary=result.analysis_summary,
-            raw_result=self._safe_json_dumps(raw_result),
-            news_content=news_content,
-            context_snapshot=context_text,
-            ideal_buy=sniper_points.get("ideal_buy"),
-            secondary_buy=sniper_points.get("secondary_buy"),
-            stop_loss=sniper_points.get("stop_loss"),
-            take_profit=sniper_points.get("take_profit"),
-            created_at=datetime.now(),
-        )
-
-        with self.get_session() as session:
-            try:
-                session.add(record)
-                session.commit()
-                return 1
-            except Exception as e:
-                session.rollback()
-                logger.error(f"保存分析历史失败: {e}")
-                return 0
-
     def get_analysis_history(
         self,
         code: Optional[str] = None,
@@ -1653,39 +1603,6 @@ class DatabaseManager:
                 pass
         return None
 
-    def _extract_sniper_points(self, result: Any) -> Dict[str, Optional[float]]:
-        """
-        Extract sniper point values from an AnalysisResult.
-
-        Tries multiple extraction paths to handle different dashboard structures:
-        1. result.get_sniper_points() (standard path)
-        2. Direct dashboard dict traversal with various nesting levels
-        3. Fallback from raw_result dict if available
-        """
-        raw_points = {}
-
-        # Path 1: standard method
-        if hasattr(result, "get_sniper_points"):
-            raw_points = result.get_sniper_points() or {}
-
-        # Path 2: direct dashboard traversal when standard path yields empty values
-        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
-            dashboard = getattr(result, "dashboard", None)
-            if isinstance(dashboard, dict):
-                raw_points = self._find_sniper_in_dashboard(dashboard) or raw_points
-
-        # Path 3: try raw_result for agent mode results
-        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
-            raw_response = getattr(result, "raw_response", None)
-            if isinstance(raw_response, dict):
-                raw_points = self._find_sniper_in_dashboard(raw_response) or raw_points
-
-        return {
-            "ideal_buy": self._parse_sniper_value(raw_points.get("ideal_buy")),
-            "secondary_buy": self._parse_sniper_value(raw_points.get("secondary_buy")),
-            "stop_loss": self._parse_sniper_value(raw_points.get("stop_loss")),
-            "take_profit": self._parse_sniper_value(raw_points.get("take_profit")),
-        }
 
     @staticmethod
     def _find_sniper_in_dashboard(d: dict) -> Optional[Dict[str, Any]]:
@@ -2005,38 +1922,38 @@ def persist_llm_usage(
         logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)
 
 
-if __name__ == "__main__":
-    # 测试代码
-    logging.basicConfig(level=logging.DEBUG)
-    
-    db = get_db()
-    
-    print("=== 数据库测试 ===")
-    print(f"数据库初始化成功")
-    
-    # 测试检查今日数据
-    has_data = db.has_today_data('600519')
-    print(f"茅台今日是否有数据: {has_data}")
-    
-    # 测试保存数据
-    test_df = pd.DataFrame({
-        'date': [date.today()],
-        'open': [1800.0],
-        'high': [1850.0],
-        'low': [1780.0],
-        'close': [1820.0],
-        'volume': [10000000],
-        'amount': [18200000000],
-        'pct_chg': [1.5],
-        'ma5': [1810.0],
-        'ma10': [1800.0],
-        'ma20': [1790.0],
-        'volume_ratio': [1.2],
-    })
-    
-    saved = db.save_daily_data(test_df, '600519', 'TestSource')
-    print(f"保存测试数据: {saved} 条")
-    
-    # 测试获取上下文
-    context = db.get_analysis_context('600519')
-    print(f"分析上下文: {context}")
+# if __name__ == "__main__":
+#     # 测试代码
+#     logging.basicConfig(level=logging.DEBUG)
+#
+#     db = get_db()
+#
+#     print("=== 数据库测试 ===")
+#     print(f"数据库初始化成功")
+#
+#     # 测试检查今日数据
+#     has_data = db.has_today_data('600519')
+#     print(f"茅台今日是否有数据: {has_data}")
+#
+#     # 测试保存数据
+#     test_df = pd.DataFrame({
+#         'date': [date.today()],
+#         'open': [1800.0],
+#         'high': [1850.0],
+#         'low': [1780.0],
+#         'close': [1820.0],
+#         'volume': [10000000],
+#         'amount': [18200000000],
+#         'pct_chg': [1.5],
+#         'ma5': [1810.0],
+#         'ma10': [1800.0],
+#         'ma20': [1790.0],
+#         'volume_ratio': [1.2],
+#     })
+#
+#     saved = db.save_daily_data(test_df, '600519', 'TestSource')
+#     print(f"保存测试数据: {saved} 条")
+#
+#     # 测试获取上下文
+#     context = db.get_analysis_context('600519')
+#     print(f"分析上下文: {context}")
