@@ -28,7 +28,6 @@
     python main.py --trade-plan  # 查看当前交易计划
 """
 import argparse
-import io
 import logging
 import os
 import sys
