@@ -85,7 +85,6 @@ class StockAnalysisPipeline:
             bocha_keys=self.config.bocha_api_keys,
             tavily_keys=self.config.tavily_api_keys,
             brave_keys=self.config.brave_api_keys,
-            serpapi_keys=self.config.serpapi_keys,
             minimax_keys=self.config.minimax_api_keys,
             news_max_age_days=self.config.news_max_age_days,
             news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
@@ -103,7 +102,7 @@ class StockAnalysisPipeline:
         else:
             logger.info("筹码分布分析已禁用")
         if self.search_service.is_available:
-            logger.info("搜索服务已启用 (Tavily/SerpAPI)")
+            logger.info("搜索服务已启用")
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
 

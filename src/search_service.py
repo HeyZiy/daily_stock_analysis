@@ -6,23 +6,22 @@ A股自选股智能分析系统 - 搜索服务模块
 
 职责：
 1. 提供统一的新闻搜索接口
-2. 支持 Bocha、Tavily、Brave、SerpAPI、SearXNG 多种搜索引擎
+2. 支持 Bocha、Tavily、Brave、MiniMax、SearXNG 多种搜索引擎
 3. 多 Key 负载均衡和故障转移
 4. 搜索结果缓存和格式化
 """
 
 import logging
-import random
 import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
+from typing import List, Dict, Any, Optional, Tuple
+
 import requests
-from newspaper import Article, Config
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -72,36 +71,6 @@ def _get_with_retry(
 ) -> requests.Response:
     """GET with retry on transient SSL/network errors."""
     return requests.get(url, headers=headers, params=params, timeout=timeout)
-
-
-def fetch_url_content(url: str, timeout: int = 5) -> str:
-    """
-    获取 URL 网页正文内容 (使用 newspaper3k)
-    """
-    try:
-        # 配置 newspaper3k
-        config = Config()
-        config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        config.request_timeout = timeout
-        config.fetch_images = False  # 不下载图片
-        config.memoize_articles = False # 不缓存
-
-        article = Article(url, config=config, language='zh') # 默认中文，但也支持其他
-        article.download()
-        article.parse()
-
-        # 获取正文
-        text = article.text.strip()
-
-        # 简单的后处理，去除空行
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        text = '\n'.join(lines)
-
-        return text[:1500]  # 限制返回长度（比 bs4 稍微多一点，因为 newspaper 解析更干净）
-    except Exception as e:
-        logger.debug(f"Fetch content failed for {url}: {e}")
-
-    return ""
 
 
 @dataclass
@@ -339,210 +308,6 @@ class TavilySearchProvider(BaseSearchProvider):
             parsed = urlparse(url)
             domain = parsed.netloc.replace('www.', '')
             return domain or '未知来源'
-        except Exception:
-            return '未知来源'
-
-
-class SerpAPISearchProvider(BaseSearchProvider):
-    """
-    SerpAPI 搜索引擎
-    
-    特点：
-    - 支持 Google、Bing、百度等多种搜索引擎
-    - 免费版每月 100 次请求
-    - 返回真实的搜索结果
-    
-    文档：https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis
-    """
-    
-    def __init__(self, api_keys: List[str]):
-        super().__init__(api_keys, "SerpAPI")
-    
-    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
-        """执行 SerpAPI 搜索"""
-        try:
-            from serpapi import GoogleSearch
-        except ImportError:
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self.name,
-                success=False,
-                error_message="google-search-results 未安装，请运行: pip install google-search-results"
-            )
-        
-        try:
-            # 确定时间范围参数 tbs
-            tbs = "qdr:w"  # 默认一周
-            if days <= 1:
-                tbs = "qdr:d"  # 过去24小时
-            elif days <= 7:
-                tbs = "qdr:w"  # 过去一周
-            elif days <= 30:
-                tbs = "qdr:m"  # 过去一月
-            else:
-                tbs = "qdr:y"  # 过去一年
-
-            # 使用 Google 搜索 (获取 Knowledge Graph, Answer Box 等)
-            params = {
-                "engine": "google",
-                "q": query,
-                "api_key": api_key,
-                "google_domain": "google.com.hk", # 使用香港谷歌，中文支持较好
-                "hl": "zh-cn",  # 中文界面
-                "gl": "cn",     # 中国地区偏好
-                "tbs": tbs,     # 时间范围限制
-                "num": max_results # 请求的结果数量，注意：Google API有时不严格遵守
-            }
-            
-            search = GoogleSearch(params)
-            response = search.get_dict()
-            
-            # 记录原始响应到日志
-            logger.debug(f"[SerpAPI] 原始响应 keys: {response.keys()}")
-            
-            # 解析结果
-            results = []
-            
-            # 1. 解析 Knowledge Graph (知识图谱)
-            kg = response.get('knowledge_graph', {})
-            if kg:
-                title = kg.get('title', '知识图谱')
-                desc = kg.get('description', '')
-                
-                # 提取额外属性
-                details = []
-                for key in ['type', 'founded', 'headquarters', 'employees', 'ceo']:
-                    val = kg.get(key)
-                    if val:
-                        details.append(f"{key}: {val}")
-                        
-                snippet = f"{desc}\n" + " | ".join(details) if details else desc
-                
-                results.append(SearchResult(
-                    title=f"[知识图谱] {title}",
-                    snippet=snippet,
-                    url=kg.get('source', {}).get('link', ''),
-                    source="Google Knowledge Graph"
-                ))
-                
-            # 2. 解析 Answer Box (精选回答/行情卡片)
-            ab = response.get('answer_box', {})
-            if ab:
-                ab_title = ab.get('title', '精选回答')
-                ab_snippet = ""
-                
-                # 财经类回答
-                if ab.get('type') == 'finance_results':
-                    stock = ab.get('stock', '')
-                    price = ab.get('price', '')
-                    currency = ab.get('currency', '')
-                    movement = ab.get('price_movement', {})
-                    mv_val = movement.get('percentage', 0)
-                    mv_dir = movement.get('movement', '')
-                    
-                    ab_title = f"[行情卡片] {stock}"
-                    ab_snippet = f"价格: {price} {currency}\n涨跌: {mv_dir} {mv_val}%"
-                    
-                    # 提取表格数据
-                    if 'table' in ab:
-                        table_data = []
-                        for row in ab['table']:
-                            if 'name' in row and 'value' in row:
-                                table_data.append(f"{row['name']}: {row['value']}")
-                        if table_data:
-                            ab_snippet += "\n" + "; ".join(table_data)
-                            
-                # 普通文本回答
-                elif 'snippet' in ab:
-                    ab_snippet = ab.get('snippet', '')
-                    list_items = ab.get('list', [])
-                    if list_items:
-                        ab_snippet += "\n" + "\n".join([f"- {item}" for item in list_items])
-                
-                elif 'answer' in ab:
-                    ab_snippet = ab.get('answer', '')
-                    
-                if ab_snippet:
-                    results.append(SearchResult(
-                        title=f"[精选回答] {ab_title}",
-                        snippet=ab_snippet,
-                        url=ab.get('link', '') or ab.get('displayed_link', ''),
-                        source="Google Answer Box"
-                    ))
-
-            # 3. 解析 Related Questions (相关问题)
-            rqs = response.get('related_questions', [])
-            for rq in rqs[:3]: # 取前3个
-                question = rq.get('question', '')
-                snippet = rq.get('snippet', '')
-                link = rq.get('link', '')
-                
-                if question and snippet:
-                     results.append(SearchResult(
-                        title=f"[相关问题] {question}",
-                        snippet=snippet,
-                        url=link,
-                        source="Google Related Questions"
-                     ))
-
-            # 4. 解析 Organic Results (自然搜索结果)
-            organic_results = response.get('organic_results', [])
-
-            for item in organic_results[:max_results]:
-                link = item.get('link', '')
-                snippet = item.get('snippet', '')
-
-                # 增强：如果需要，解析网页正文
-                # 策略：如果摘要太短，或者为了获取更多信息，可以请求网页
-                # 这里我们对所有结果尝试获取正文，但为了性能，仅获取前1000字符
-                content = ""
-                if link:
-                   try:
-                       fetched_content = fetch_url_content(link, timeout=5)
-                       if fetched_content:
-                           # 如果获取到了正文，将其拼接到 snippet 中，或者替换 snippet
-                           # 这里选择拼接，保留原摘要
-                           content = fetched_content
-                           if len(content) > 500:
-                               snippet = f"{snippet}\n\n【网页详情】\n{content[:500]}..."
-                           else:
-                               snippet = f"{snippet}\n\n【网页详情】\n{content}"
-                   except Exception as e:
-                       logger.debug(f"[SerpAPI] Fetch content failed: {e}")
-
-                results.append(SearchResult(
-                    title=item.get('title', ''),
-                    snippet=snippet[:1000], # 限制总长度
-                    url=link,
-                    source=item.get('source', self._extract_domain(link)),
-                    published_date=item.get('date'),
-                ))
-
-            return SearchResponse(
-                query=query,
-                results=results,
-                provider=self.name,
-                success=True,
-            )
-            
-        except Exception as e:
-            error_msg = str(e)
-            return SearchResponse(
-                query=query,
-                results=[],
-                provider=self.name,
-                success=False,
-                error_message=error_msg
-            )
-    
-    @staticmethod
-    def _extract_domain(url: str) -> str:
-        """从 URL 提取域名"""
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            return parsed.netloc.replace('www.', '') or '未知来源'
         except Exception:
             return '未知来源'
 
@@ -1354,7 +1119,6 @@ class SearchService:
         bocha_keys: Optional[List[str]] = None,
         tavily_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
-        serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         news_max_age_days: int = 3,
@@ -1367,7 +1131,6 @@ class SearchService:
             bocha_keys: 博查搜索 API Key 列表
             tavily_keys: Tavily API Key 列表
             brave_keys: Brave Search API Key 列表
-            serpapi_keys: SerpAPI Key 列表
             minimax_keys: MiniMax API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             news_max_age_days: 新闻最大时效（天）
@@ -1407,17 +1170,12 @@ class SearchService:
             self._providers.append(BraveSearchProvider(brave_keys))
             logger.info(f"已配置 Brave 搜索，共 {len(brave_keys)} 个 API Key")
 
-        # 4. SerpAPI 作为备选（每月 100 次）
-        if serpapi_keys:
-            self._providers.append(SerpAPISearchProvider(serpapi_keys))
-            logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
-
-        # 5. MiniMax（Coding Plan Web Search，结构化结果）
+        # 4. MiniMax（Coding Plan Web Search，结构化结果）
         if minimax_keys:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 6. SearXNG（自建实例，无配额兜底，最后兜底）
+        # 5. SearXNG（自建实例，无配额兜底，最后兜底）
         if searxng_base_urls:
             self._providers.append(SearXNGSearchProvider(searxng_base_urls))
             logger.info(f"已配置 SearXNG 搜索，共 {len(searxng_base_urls)} 个实例")
@@ -2281,7 +2039,6 @@ def get_search_service() -> SearchService:
             bocha_keys=config.bocha_api_keys,
             tavily_keys=config.tavily_api_keys,
             brave_keys=config.brave_api_keys,
-            serpapi_keys=config.serpapi_keys,
             minimax_keys=config.minimax_api_keys,
             searxng_base_urls=config.searxng_base_urls,
             news_max_age_days=config.news_max_age_days,
