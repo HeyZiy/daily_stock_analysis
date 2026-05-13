@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 ===================================
 趋势跟踪系统（无 LLM 版本）
@@ -33,7 +33,7 @@ import os
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -93,9 +93,31 @@ class SimpleTechnicalAnalyzer:
             self._trading_dates_cache = trading_dates
             return trading_dates
         except Exception as e:
-            # 【修改点】不要再做自然日近似了，直接抛出异常，让主程序报错退出！
             logger.error(f"严重错误：获取交易日历失败！无法进行后续精确计算。错误信息: {e}")
             raise RuntimeError("交易日历获取失败。")
+
+    def get_stocks_pct_change(self, stock_list: List[Tuple[str, str]]) -> Dict[str, float]:
+        """
+        获取股票列表的涨跌幅
+
+        Args:
+            stock_list: [(code, name), ...]
+
+        Returns:
+            {code: pct_change} 涨跌幅百分比
+        """
+        pct_changes = {}
+        for code, name in stock_list:
+            try:
+                quote = self.fetcher.get_realtime_quote(code)
+                if quote and hasattr(quote, 'pct_chg'):
+                    pct_changes[code] = float(quote.pct_chg) if quote.pct_chg is not None else 0.0
+                else:
+                    pct_changes[code] = 0.0
+            except Exception as e:
+                logger.debug(f"获取 {code} 涨跌幅失败: {e}")
+                pct_changes[code] = 0.0
+        return pct_changes
 
     # check_market_environment 已迁移至 market_review.check_market_gate()
 
@@ -347,18 +369,32 @@ class SimpleTechnicalAnalyzer:
 
         return signals
     
-    def analyze_all_stocks(self, stock_list: List[Tuple[str, str]]) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]]]:
+    def analyze_all_stocks(self, stock_list: List[Tuple[str, str]], 
+                          max_stocks: Optional[int] = None,
+                          sort_by_pct: bool = True) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]]]:
         """
         分析所有关注股票，返回技术信号列表和剔除列表
 
         Args:
             stock_list: [(code, name), ...]
+            max_stocks: 最大分析数量，超过则按跌幅排序取前N只
+            sort_by_pct: 是否按跌幅排序（优先分析跌幅大的股票）
 
         Returns:
             (技术信号列表, [(code, name, 剔除原因), ...])
         """
         all_signals = []
         removed_stocks = []
+
+        if max_stocks and len(stock_list) > max_stocks:
+            if sort_by_pct:
+                logger.info(f"获取涨跌幅数据，股票数量 {len(stock_list)} 超过限制 {max_stocks}，按跌幅排序...")
+                pct_changes = self.get_stocks_pct_change(stock_list)
+                sorted_stocks = sorted(stock_list, key=lambda x: pct_changes.get(x[0], 0))
+                stock_list = sorted_stocks[:max_stocks]
+                logger.info(f"已选取跌幅最大的 {max_stocks} 只股票进行分析")
+            else:
+                stock_list = stock_list[:max_stocks]
 
         logger.info(f"开始处理 {len(stock_list)} 只股票...")
 
@@ -548,6 +584,13 @@ def parse_arguments() -> argparse.Namespace:
         help='指定要分析的股票代码，逗号分隔（覆盖妙想自选股）'
     )
 
+    parser.add_argument(
+        '--max-stocks',
+        type=int,
+        default=None,
+        help='每天最多分析多少只股票（按跌幅排序优先分析跌幅大的）'
+    )
+
     trade_group = parser.add_argument_group('交易模式（可选）')
     trade_group.add_argument(
         '--trade',
@@ -584,6 +627,10 @@ def main():
     try:
         analyzer = SimpleTechnicalAnalyzer()
         
+        max_stocks = args.max_stocks
+        if max_stocks is None:
+            max_stocks = int(os.getenv('MAX_STOCKS_PER_DAY', '0')) or None
+        
         # 1. 获取股票列表（从妙想或命令行）
         if args.stocks:
             # 使用命令行指定的股票
@@ -602,7 +649,7 @@ def main():
         stock_list = list(zip(stock_codes, [name_mapping.get(c, c) for c in stock_codes]))
         logger.info(f"当前关注列表: {len(stock_list)} 只股票")
 
-        signals, removed_stocks = analyzer.analyze_all_stocks(stock_list)
+        signals, removed_stocks = analyzer.analyze_all_stocks(stock_list, max_stocks=max_stocks, sort_by_pct=True)
 
         # 3. 从妙想删除剔除的股票（仅当不是命令行指定模式时）
         if removed_stocks and not args.stocks:
