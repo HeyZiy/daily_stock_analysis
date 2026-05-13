@@ -638,6 +638,7 @@ class EfinanceFetcher(BaseFetcher):
             '成交量': 'volume',
             '成交额': 'amount',
             '涨跌幅': 'pct_chg',
+            '换手率': 'turnover_rate',
             '股票代码': 'code',
             '股票名称': 'name',
         }

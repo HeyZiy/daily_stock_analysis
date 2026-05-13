@@ -157,12 +157,19 @@ class SimpleTechnicalAnalyzer:
                     if (pd.notna(r5) and pd.notna(r20) and r20 > 0 and r5 > r20 * 2.0):
                         return True, f"情绪过热（近5日换手{r5:.1f}% 是近20日均{r20:.1f}%的{r5/r20:.1f}倍）"
 
+                # 规则4：5日平均换手过低，且无单日活跃换手
+                if 'turnover_rate' in df.columns and len(df) >= 5:
+                    recent_tr = df['turnover_rate'].iloc[-5:]
+                    avg_tr = recent_tr.mean()
+                    if (pd.notna(avg_tr) and avg_tr < 1.0 and (recent_tr >= 3.0).sum() == 0):
+                        return True, f"5日平均换手{avg_tr:.1f}%过低且无活跃换手"
+
         except Exception as e:
             logger.debug(f"检查 {code} 剔除条件时出错: {e}")
 
         return False, ""
 
-    def fetch_stock_data(self, code: str, days: int = 30) -> Optional[pd.DataFrame]:
+    def fetch_stock_data(self, code: str, days: int = 40) -> Optional[pd.DataFrame]:
         """
         获取股票历史数据（直接从网络获取）
 
@@ -202,7 +209,7 @@ class SimpleTechnicalAnalyzer:
             logger.warning(f"获取 {code} 数据失败: {e}")
             return None
     
-    def detect_signals(self, code: str, name: str, df: pd.DataFrame) -> List[TechnicalSignal]:
+    def detect_signals(self, code: str, name: str, df) -> List[TechnicalSignal]:
         """
         检测技术信号
 
@@ -363,9 +370,6 @@ class SimpleTechnicalAnalyzer:
                 if should_remove:
                     removed_stocks.append((code, name, remove_reason))
                     logger.info(f"❌ 剔除 {name}({code}): {remove_reason}")
-                    continue
-
-                if df is None:
                     continue
 
                 signals = self.detect_signals(code, name, df)
