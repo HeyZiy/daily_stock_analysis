@@ -457,12 +457,17 @@ class AkshareFetcher(BaseFetcher):
                     df = df.rename(columns={'date': '日期'})
 
                 # 映射其他列以匹配 _normalize_data 的期望
-                # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额
+                # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 换手率
                 rename_map = {
                     'open': '开盘', 'high': '最高', 'low': '最低',
-                    'close': '收盘', 'volume': '成交量', 'amount': '成交额'
+                    'close': '收盘', 'volume': '成交量', 'amount': '成交额',
+                    'turnover': '换手率',
                 }
                 df = df.rename(columns=rename_map)
+
+                # 新浪 turnover 列是小数比率（0.104325 = 10.43%），转为百分数
+                if '换手率' in df.columns:
+                    df['换手率'] = df['换手率'] * 100
 
                 # 计算涨跌幅（新浪接口可能不返回）
                 if '收盘' in df.columns:

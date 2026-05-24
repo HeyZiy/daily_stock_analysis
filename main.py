@@ -7,10 +7,10 @@
 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。
 
 职责：
-1. 读取妙想自选股，直接进行技术分析
+1. 读取妙想自选股或指定股票列表，直接进行技术分析
 2. 市场环境过滤（满足2/5条件才允许开仓）
 3. 纯技术分析（第一次分歧回踩MA5等规则）
-4. 模拟交易执行
+4. 观察池维护（趋势破坏自动剔除）
 
 核心策略：
 - 买点：主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）
@@ -21,11 +21,11 @@
 - 趋势不走坏即保留，连续2天跌破10日线才剔除
 
 使用方式：
-    python main.py              # 正常运行
-    python main.py --debug      # 调试模式
-    python main.py --trade       # 分析+生成交易计划
-    python main.py --trade-execute  # 执行盘中交易
-    python main.py --trade-plan  # 查看当前交易计划
+    python main.py                    # 正常运行
+    python main.py --debug            # 调试模式
+    python main.py --no-notify        # 不发送通知
+    python main.py --stocks CODE1,CODE2  # 指定股票分析
+    python main.py --max-stocks N     # 最多分析N只股票（按跌幅排序）
 """
 import argparse
 import logging
@@ -146,9 +146,9 @@ class SimpleTechnicalAnalyzer:
     
     def analyze_all_stocks(self, stock_list: List[Tuple[str, str]], 
                           max_stocks: Optional[int] = None,
-                          sort_by_pct: bool = True) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]]]:
+                          sort_by_pct: bool = True) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]], List[Tuple[str, str, str]]]:
         """
-        分析所有关注股票，返回技术信号列表和剔除列表
+        分析所有关注股票，返回技术信号列表、剔除列表和失败列表
 
         Args:
             stock_list: [(code, name), ...]
@@ -156,10 +156,11 @@ class SimpleTechnicalAnalyzer:
             sort_by_pct: 是否按跌幅排序（优先分析跌幅大的股票）
 
         Returns:
-            (技术信号列表, [(code, name, 剔除原因), ...])
+            (技术信号列表, [(code, name, 剔除原因), ...], [(code, name, 失败原因), ...])
         """
         all_signals = []
         removed_stocks = []
+        failed_stocks = []
 
         if max_stocks and len(stock_list) > max_stocks:
             if sort_by_pct:
@@ -198,14 +199,15 @@ class SimpleTechnicalAnalyzer:
                     logger.info(f"进度: {i + 1}/{len(stock_list)}")
 
             except Exception as e:
-                logger.warning(f"分析 {code} 失败: {e}")
+                logger.warning(f"分析 {name}({code}) 失败: {e}")
+                failed_stocks.append((code, name, str(e)))
                 continue
 
         all_signals.sort(key=lambda x: x.score, reverse=True)
 
-        kept_count = len(stock_list) - len(removed_stocks)
-        logger.info(f"处理完成 | 保留:{kept_count} 剔除:{len(removed_stocks)} 信号:{len(all_signals)}")
-        return all_signals, removed_stocks
+        kept_count = len(stock_list) - len(removed_stocks) - len(failed_stocks)
+        logger.info(f"处理完成 | 保留:{kept_count} 剔除:{len(removed_stocks)} 失败:{len(failed_stocks)} 信号:{len(all_signals)}")
+        return all_signals, removed_stocks, failed_stocks
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -324,7 +326,7 @@ def main():
         stock_list = list(zip(stock_codes, [name_mapping.get(c, c) for c in stock_codes]))
         logger.info(f"当前关注列表: {len(stock_list)} 只股票")
 
-        signals, removed_stocks = analyzer.analyze_all_stocks(stock_list, max_stocks=max_stocks, sort_by_pct=True)
+        signals, removed_stocks, failed_stocks = analyzer.analyze_all_stocks(stock_list, max_stocks=max_stocks, sort_by_pct=False)
 
         # 3. 从妙想删除剔除的股票（仅当不是命令行指定模式时）
         if removed_stocks and not args.stocks:
@@ -342,13 +344,14 @@ def main():
         logger.info(market_summary)
 
         report = generate_technical_report(signals, removed_stocks,
-                                           market_env=(can_trade, market_conditions, market_summary, market_regime))
+                                           market_env=(can_trade, market_conditions, market_summary, market_regime),
+                                           failed_stocks=failed_stocks)
 
         # 5. 保存报告
         _save_report(report)
 
         # 6. 发送通知
-        if signals and not args.no_notify:
+        if not args.no_notify:
             _send_notification(report)
         
         logger.info("运行完成")

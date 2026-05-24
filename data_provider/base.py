@@ -435,7 +435,7 @@ class BaseFetcher(ABC):
             df['date'] = pd.to_datetime(df['date'])
         
         # 数值列类型转换
-        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')

@@ -85,9 +85,8 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         upper_shadow_ratio = (latest['high'] - max(latest['open'], latest['close'])) / intraday_range
         lower_shadow_ratio = (min(latest['open'], latest['close']) - latest['low']) / intraday_range
         has_intraday_support = (
-            close_position > 0.7
-            and upper_shadow_ratio < 0.35
-            and lower_shadow_ratio > 0.2
+            close_position > 0.4
+            and lower_shadow_ratio > 0.1
         )
     else:
         close_position = 0.5
@@ -101,12 +100,13 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     # 2. 不破5日线（或盘中破但尾盘收回）
     holds_ma5 = current_price >= ma5 * 0.995  # 允许微破
 
-    # 3. 选股池条件：换手率 > 5%（保证活跃度）
+    # 3. 选股池条件：换手率 > 3%（保证活跃度，缩量日允许适当降低）
     turnover = latest.get('turnover_rate', 0)
-    meets_liquidity = turnover > 5.0
+    meets_liquidity = turnover > 3.0
 
     # 4. 非情绪过热检查：排除短期涨幅过大、偏离5日线过远、波动剧烈的标的
     is_euphoric = False
+    recent_3d_gain = recent_5d_gain = recent_max_amplitude = 0.0
     if len(df) >= 4:
         recent_3d_gain = (df.iloc[-1]['close'] - df.iloc[-4]['close']) / df.iloc[-4]['close'] * 100
         recent_5d_gain = (df.iloc[-1]['close'] - df.iloc[-6]['close']) / df.iloc[-6]['close'] * 100 if len(df) >= 6 else 0
@@ -129,9 +129,9 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     volume_ma5 = df['volume'].rolling(5).mean().iloc[-1] if len(df) >= 5 else 0
     no_volume_blowoff = volume_ma5 > 0 and current_volume < volume_ma5 * 1.1
 
-    # 6. 第一次回踩MA5检查：过去5天收盘价始终在MA5之上
+    # 6. 第一次回踩MA5检查：过去5天至少3天收盘在MA5之上
     recently_above_ma5 = (
-        all(df.iloc[i]['close'] > df.iloc[i]['ma5'] for i in range(-6, -1))
+        sum(1 for i in range(-6, -1) if df.iloc[i]['close'] > df.iloc[i]['ma5']) >= 3
         if len(df) >= 6 else False
     )
 
@@ -140,11 +140,34 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
 
     # 只有均线多头排列的股票才有分析意义
     if not is_bullish_alignment:
+        logger.debug(f"  {name}({code}) ✗ 均线非多头排列: ma5={ma5:.2f} ma10={ma10:.2f} ma20={ma20:.2f}")
         return signals
+
+    # === 诊断日志：逐条件输出 ===
+    _cond_fails = []
+    if not holds_ma5:
+        _cond_fails.append(f"未守住MA5(price={current_price:.2f} vs ma5*0.995={ma5*0.995:.2f})")
+    if not no_volume_blowoff:
+        _cond_fails.append(f"放量(vol={current_volume:.0f} vs vol_ma5*1.1={volume_ma5*1.1:.0f})")
+    if not (-1.5 < bias_ma5 < 3.5):
+        _cond_fails.append(f"乖离率超范围(bias_ma5={bias_ma5:+.2f}%)")
+    if not has_intraday_support:
+        _cond_fails.append(f"日内承接弱(cp={close_position:.2f} us={upper_shadow_ratio:.2f} ls={lower_shadow_ratio:.2f})")
+    if not meets_liquidity:
+        _cond_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
+    if is_euphoric:
+        _cond_fails.append(f"情绪过热(3d={recent_3d_gain:.1f}% 5d={recent_5d_gain:.1f}% 振幅={recent_max_amplitude:.1f}%)")
+    if not recently_above_ma5:
+        _cond_fails.append("5天内<3天站在MA5之上")
+
+    if _cond_fails:
+        logger.debug(f"  {name}({code}) 信号1不满足 | {'; '.join(_cond_fails)}")
+    else:
+        logger.info(f"  {name}({code}) ✅ 信号1全部条件满足！")
 
     # 信号1: 缩量回踩 MA5（主升中的第一次分歧回踩）— 最佳买点
     # 条件：多头排列 + 守住MA5 + 缩量 + 小实体/小跌 + 换手达标 + 非加速
-    if (holds_ma5 and no_volume_blowoff and abs(bias_ma5) < 2.0
+    if (holds_ma5 and no_volume_blowoff and -1.5 < bias_ma5 < 3.5
             and has_intraday_support and meets_liquidity
             and not is_euphoric and recently_above_ma5):
 
@@ -204,6 +227,23 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
             turnover_rate=turnover,
             description=f"回踩MA10（回踩较深），缩量（量比{volume_ratio:.2f}），涨跌{pct_change:+.2f}%，需次日弱转强确认"
         ))
+
+    else:
+        # 信号2也未触发，输出信号2专属失败原因
+        _s2_fails = []
+        if holds_ma5:
+            _s2_fails.append("仍守住MA5(需跌破才触发回踩MA10)")
+        if not no_volume_blowoff:
+            _s2_fails.append(f"放量(vol={current_volume:.0f} vs vol_ma5*1.1={volume_ma5*1.1:.0f})")
+        if not touches_ma10:
+            _s2_fails.append(f"未触及MA10(low={latest['low']:.2f} vs ma10*1.01={ma10*1.01:.2f})")
+        if not has_intraday_support:
+            _s2_fails.append(f"日内承接弱(cp={close_position:.2f} us={upper_shadow_ratio:.2f} ls={lower_shadow_ratio:.2f})")
+        if not meets_liquidity:
+            _s2_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
+        if is_euphoric:
+            _s2_fails.append("情绪过热")
+        logger.debug(f"  {name}({code}) 信号2不满足 | {'; '.join(_s2_fails)}")
 
     # 注意：不放量突破信号 — 策略明确规定"不做加速追高"
 

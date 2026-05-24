@@ -25,6 +25,7 @@ def generate_technical_report(
     signals: List[TechnicalSignal],
     removed_stocks: Optional[List[Tuple[str, str, str]]] = None,
     market_env: Optional[Tuple] = None,
+    failed_stocks: Optional[List[Tuple[str, str, str]]] = None,
 ) -> str:
     """
     生成 Markdown 格式的趋势跟踪日报。
@@ -33,11 +34,13 @@ def generate_technical_report(
         signals: TechnicalSignal 列表
         removed_stocks: (code, name, reason) 元组列表
         market_env: (can_trade, conditions, summary, regime) 或 None
+        failed_stocks: (code, name, reason) 元组列表
 
     Returns:
         格式化的 Markdown 字符串
     """
     removed_stocks = removed_stocks or []
+    failed_stocks = failed_stocks or []
     today_str = datetime.now().strftime('%Y-%m-%d')
 
     lines = [
@@ -45,7 +48,7 @@ def generate_technical_report(
         "",
         f"> 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。",
         "",
-        f"> 共发现 **{len(signals)}** 个技术信号 | 剔除 **{len(removed_stocks)}** 只股票",
+        f"> 共发现 **{len(signals)}** 个技术信号 | 剔除 **{len(removed_stocks)}** 只股票 | 失败 **{len(failed_stocks)}** 只",
         "",
         "---",
         "",
@@ -84,6 +87,19 @@ def generate_technical_report(
             lines.append(f"| {name}({code}) | {reason} |")
         if len(removed_stocks) > 20:
             lines.append(f"| ... | 等共{len(removed_stocks)}只股票 |")
+        lines.extend(["", "---", ""])
+
+    if failed_stocks:
+        lines.extend([
+            "## ⚠️ 分析失败股票",
+            "",
+            "| 股票 | 失败原因 |",
+            "|------|----------|",
+        ])
+        for code, name, reason in failed_stocks[:20]:
+            lines.append(f"| {name}({code}) | {reason} |")
+        if len(failed_stocks) > 20:
+            lines.append(f"| ... | 等共{len(failed_stocks)}只股票 |")
         lines.extend(["", "---", ""])
 
     # 分类展示
