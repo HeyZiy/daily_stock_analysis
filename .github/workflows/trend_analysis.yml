@@ -1,0 +1,129 @@
+name: 每日简化版趋势跟踪分析
+
+on:
+  # 定时触发 - 每天北京时间 13:30 (UTC 05:30) 收盘后执行
+  schedule:
+    - cron: '30 5 * * 1-5'     # 周一到周五，UTC 05:30 = 北京时间 13:30（选股完成后）
+  
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: '强制运行（跳过交易日检查）'
+        required: false
+        default: false
+        type: boolean
+
+# 并发控制：同一时间只运行一个分析任务
+concurrency:
+  group: simple-stock-analysis
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    # 添加超时限制，防止任务卡死
+    timeout-minutes: 30
+    
+    steps:
+      - name: 随机延迟（避免固定时间访问）
+        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
+      
+      - name: 检出代码
+        uses: actions/checkout@v5
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 创建必要目录
+        run: |
+          mkdir -p data logs reports
+
+      - name: 执行简化版趋势跟踪分析
+        env:
+          # ==========================================
+          # 数据源
+          # ==========================================
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          MX_APIKEY: ${{ secrets.MX_APIKEY }}
+
+          # ==========================================
+          # 通知渠道（可同时配置多个，全部推送）
+          # ==========================================
+          # 飞书
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          # 钉钉
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          # Discord
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # 邮件
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
+
+          # ==========================================
+          # 自选股配置
+          # ==========================================
+          STOCK_LIST: ${{ vars.STOCK_LIST }}
+          
+          # ==========================================
+          # 系统配置
+          # ==========================================
+          LOG_LEVEL: INFO
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
+          MAX_STOCKS_PER_DAY: ${{ vars.MAX_STOCKS_PER_DAY || '50' }}
+          # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
+          # 可选值: tencent, akshare_sina, efinance, akshare_em, tushare
+          REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
+          
+        run: |
+          echo "=========================================="
+          echo "🚀 简化版趋势跟踪系统 (无 LLM)"
+          echo "=========================================="
+          echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          
+          # 构建命令行参数
+          FORCE_RUN_ARG=""
+          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
+            FORCE_RUN_ARG="--force-run"
+            echo "⚡ 已启用强制运行模式（跳过交易日检查）"
+          fi
+
+          # 执行分析
+          python trend_analysis.py $FORCE_RUN_ARG
+      
+      - name: 上传分析报告
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: simple-analysis-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
+      
+      - name: 显示运行结果
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "📊 分析完成"
+          echo "=========================================="
+          if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
+            echo "生成的报告:"
+            ls -la reports/
+          else
+            echo "⚠️ 未生成报告文件"
+          fi
+          echo ""
+          if [ -f "logs/stock_analysis_simple_$(date +%Y%m%d).log" ]; then
+            echo "📜 最近日志（最后 30 行）:"
+            tail -30 logs/stock_analysis_simple_*.log 2>/dev/null || echo "无日志"
+          fi

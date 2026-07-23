@@ -1,0 +1,399 @@
+# -*- coding: utf-8 -*-
+"""
+趋势波段策略 — 分歧回踩信号检测
+
+核心买点逻辑：
+- 第一次分歧回踩 MA5（缩量 + 不破5日线 + 换手率>5%）
+- 回踩 MA10（次优，需确认）
+"""
+
+import logging
+from dataclasses import dataclass
+from typing import List
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TechnicalSignal:
+    """技术信号数据类"""
+    code: str
+    name: str
+    signal_type: str  # 'pullback_ma5', 'pullback_ma10' 等
+    score: int  # 技术评分 0-100
+    current_price: float
+    ma5: float
+    ma10: float
+    ma20: float
+    bias_ma5: float  # 乖离率
+    volume_ratio: float  # 量比
+    turnover_rate: float  # 换手率
+    pct_change: float = 0.0  # 当日涨跌幅
+    effective_score: int = 0  # 经市场环境调节后的有效评分
+    regime_note: str = ""  # 环境调节说明（如"趋势下行×0.75"）
+    description: str = ""  # 信号描述
+
+
+def _compute_signal_score(signal_type: str, metrics: dict) -> int:
+    """
+    根据多维指标动态计算信号评分，替代硬编码的 90/65。
+
+    Args:
+        signal_type: 'pullback_ma5' 或 'pullback_ma10'
+        metrics: 包含以下键的字典：
+            bias_ma5, volume_ratio, pct_change, turnover_rate,
+            close_position, lower_shadow, recently_above_ma5_count
+
+    Returns:
+        0-100 的评分
+    """
+    bias = metrics.get('bias_ma5', 0)
+    vr = metrics.get('volume_ratio', 1.0)
+    pct = metrics.get('pct_change', 0)
+    tr = metrics.get('turnover_rate', 0)
+    cp = metrics.get('close_position', 0.5)
+    ls = metrics.get('lower_shadow', 0.1)
+    above_count = metrics.get('recently_above_ma5_count', 3)
+
+    if signal_type == 'pullback_ma5':
+        # --- bias_ma5 (0~25分): 越贴近MA5越好 ---
+        if 0.0 <= bias <= 2.0:
+            bias_score = 25 - abs(bias - 0.5) * 10  # 峰值为+0.5%
+        elif -1.0 <= bias < 0.0:
+            bias_score = 20 - abs(bias) * 5  # 负乖离也可接受
+        else:
+            bias_score = max(0, 10 - abs(bias - 2.0) * 5)
+
+        # --- volume_ratio (0~20分): 适度缩量最好 ---
+        if 0.5 <= vr <= 0.9:
+            vol_score = 20 - abs(vr - 0.7) * 25  # 峰值为0.7
+        elif 0.4 <= vr < 0.5:
+            vol_score = 12
+        elif 0.9 < vr <= 1.05:
+            vol_score = 10 - (vr - 0.9) * 66
+        else:
+            vol_score = max(0, 5)
+
+        # --- pct_change (0~15分): 接近零最好 ---
+        if -2.0 <= pct <= 1.0:
+            pct_score = 15 - abs(pct) * 3
+        elif -4.0 <= pct < -2.0 or 1.0 < pct <= 4.0:
+            pct_score = 10 - abs(pct - 1.0) * 2
+        else:
+            pct_score = max(0, 5)
+
+        # --- turnover_rate (0~15分): 4~7%最佳 ---
+        if 4.0 <= tr <= 7.0:
+            tr_score = 15
+        elif 3.0 <= tr < 4.0 or 7.0 < tr <= 10.0:
+            tr_score = 10
+        else:
+            tr_score = max(0, 5)
+
+        # --- intraday_support (0~15分) ---
+        if cp > 0.6 and ls > 0.2:
+            id_score = 15
+        elif cp > 0.4 and ls > 0.1:
+            id_score = 10
+        else:
+            id_score = 5
+
+        # --- recently_above_ma5 (0~10分) ---
+        above_score = min(10, above_count * 2)
+
+        score = bias_score + vol_score + pct_score + tr_score + id_score + above_score
+        return min(95, max(50, score))
+
+    elif signal_type == 'pullback_ma10':
+        # MA10回踩评分：更低基础，保守权重
+        # bias_ma5 (0~15分)
+        if -3.0 <= bias <= 0:
+            bias_score = 15 - abs(bias + 1.0) * 3
+        else:
+            bias_score = max(0, 8 - abs(bias) * 2)
+
+        # volume_ratio (0~20分)
+        if 0.4 <= vr <= 0.9:
+            vol_score = 20 - abs(vr - 0.6) * 20
+        else:
+            vol_score = max(0, 8)
+
+        # pct_change (0~15分)
+        if -4.0 <= pct <= 1.0:
+            pct_score = 15 - abs(pct + 1.0) * 2
+        else:
+            pct_score = max(0, 5)
+
+        # turnover_rate (0~20分)
+        if 3.0 <= tr <= 8.0:
+            tr_score = 20 - abs(tr - 5.0) * 3
+        else:
+            tr_score = max(0, 8)
+
+        # intraday_support (0~15分)
+        id_score = 10 if cp > 0.4 and ls > 0.1 else 5
+
+        # touches_ma10 (0~15分)
+        touches = metrics.get('touches_ma10', False)
+        touch_score = 15 if touches else 0
+
+        score = bias_score + vol_score + pct_score + tr_score + id_score + touch_score
+        return min(85, max(30, score))
+
+    return 50
+
+
+def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[TechnicalSignal]:
+    """
+    检测缩量回踩 MA5 / MA10 趋势波段信号。
+
+    Args:
+        code: 股票代码
+        name: 股票名称
+        df: 已计算 MA5/MA10/MA20 的日线 DataFrame
+
+    Returns:
+        匹配规则的 TechnicalSignal 列表
+    """
+    signals: List[TechnicalSignal] = []
+
+    if df is None:
+        logger.warning(f"⚠️ {name}({code}): 数据为空，跳过分析")
+        return signals
+
+    if len(df) < 20:
+        logger.warning(f"⚠️ {name}({code}): 数据不足20条(仅{len(df)}条)，可能影响分析准确性")
+
+    df = df.sort_values('date').reset_index(drop=True)
+
+    # 取最新数据
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else None
+
+    current_price = latest['close']
+    ma5 = latest['ma5']
+    ma10 = latest['ma10']
+    ma20 = latest['ma20']
+    _vr = latest.get('volume_ratio')
+    volume_ratio = float(_vr) if _vr is not None and pd.notna(_vr) else 1.0
+
+    if pd.isna(ma5) or pd.isna(ma10) or pd.isna(ma20):
+        return signals
+
+    # 计算乖离率
+    bias_ma5 = (current_price - ma5) / ma5 * 100 if ma5 > 0 else 0
+
+    # 计算当日涨跌幅（用于条件过滤 + 描述）
+    pct_change = 0.0
+    if prev is not None and prev['close'] > 0:
+        pct_change = (current_price - prev['close']) / prev['close'] * 100
+
+    # 当日涨跌幅是否温和（排除涨停/准涨停和崩盘式下跌）
+    is_moderate_change = -5.0 < pct_change < 7.0
+
+    # 计算日内承接：通过上下影线和收盘位置判断资金承接意愿
+    intraday_range = latest['high'] - latest['low']
+    if intraday_range > 0:
+        close_position = (latest['close'] - latest['low']) / intraday_range
+        upper_shadow_ratio = (latest['high'] - max(latest['open'], latest['close'])) / intraday_range
+        lower_shadow_ratio = (min(latest['open'], latest['close']) - latest['low']) / intraday_range
+        has_intraday_support = (
+            close_position > 0.4
+            and lower_shadow_ratio > 0.1
+        )
+    else:
+        close_position = 0.5
+        has_intraday_support = True
+
+    # === 策略检查 ===
+
+    # 1. 均线多头排列：5日线 > 10日线 > 20日线
+    is_bullish_alignment = ma5 > ma10 > ma20
+
+    # 2. 不破5日线（或盘中破但尾盘收回）
+    holds_ma5 = current_price >= ma5 * 0.995  # 允许微破
+
+    # 3. 选股池条件：换手率 > 3%（保证活跃度，缩量日允许适当降低）
+    turnover = latest.get('turnover_rate', 0)
+    meets_liquidity = turnover > 3.0
+
+    # 4. 非情绪过热检查：排除短期涨幅过大、偏离5日线过远、波动剧烈的标的
+    is_euphoric = False
+    recent_3d_gain = recent_5d_gain = recent_max_amplitude = 0.0
+    if len(df) >= 4:
+        recent_3d_gain = (df.iloc[-1]['close'] - df.iloc[-4]['close']) / df.iloc[-4]['close'] * 100
+        recent_5d_gain = (df.iloc[-1]['close'] - df.iloc[-6]['close']) / df.iloc[-6]['close'] * 100 if len(df) >= 6 else 0
+        recent_max_bias_ma5 = max(
+            (df.iloc[i]['close'] - df.iloc[i]['ma5']) / df.iloc[i]['ma5'] * 100
+            for i in range(-min(5, len(df)), 0)
+            if pd.notna(df.iloc[i]['ma5']) and df.iloc[i]['ma5'] > 0
+        ) if len(df) >= 2 else 0
+        # 近3日最大振幅（高波动 = 博弈激烈，不适合低吸）
+        recent_max_amplitude = max(
+            (df.iloc[i]['high'] - df.iloc[i]['low']) / df.iloc[i-1]['close'] * 100
+            for i in range(-3, 0)
+            if df.iloc[i-1]['close'] > 0
+        )
+        if recent_3d_gain >= 18 or recent_5d_gain >= 30 or recent_max_bias_ma5 >= 12 or recent_max_amplitude >= 15:
+            is_euphoric = True
+        # 单日暴涨（涨停/准涨停）视为情绪过热
+        if pct_change > 7.0:
+            is_euphoric = True
+
+    # 5. 量能检查：当日成交量 < 5日均量 * 1.1（不允许爆量，而非必须地量）
+    current_volume = latest['volume']
+    volume_ma5 = df['volume'].rolling(5).mean().iloc[-1] if len(df) >= 5 else 0
+    no_volume_blowoff = volume_ma5 > 0 and current_volume < volume_ma5 * 1.1
+
+    # 6. 第一次回踩MA5检查：过去5天至少3天收盘在MA5之上
+    recently_above_ma5 = (
+        sum(1 for i in range(-6, -1) if df.iloc[i]['close'] > df.iloc[i]['ma5']) >= 3
+        if len(df) >= 6 else False
+    )
+
+    # 7. MA10 回踩确认：盘中最低价接近MA10且收盘守住
+    touches_ma10 = latest['low'] <= ma10 * 1.01 and current_price >= ma10
+
+    # 只有均线多头排列的股票才有分析意义
+    if not is_bullish_alignment:
+        logger.debug(f"  {name}({code}) ✗ 均线非多头排列: ma5={ma5:.2f} ma10={ma10:.2f} ma20={ma20:.2f}")
+        return signals
+
+    # === 诊断日志：逐条件输出 ===
+    _cond_fails = []
+    if not holds_ma5:
+        _cond_fails.append(f"未守住MA5(price={current_price:.2f} vs ma5*0.995={ma5*0.995:.2f})")
+    if not no_volume_blowoff:
+        _cond_fails.append(f"放量(vol={current_volume:.0f} vs vol_ma5*1.1={volume_ma5*1.1:.0f})")
+    if not (-1.5 < bias_ma5 < 3.5):
+        _cond_fails.append(f"乖离率超范围(bias_ma5={bias_ma5:+.2f}%)")
+    if not has_intraday_support:
+        _cond_fails.append(f"日内承接弱(cp={close_position:.2f} us={upper_shadow_ratio:.2f} ls={lower_shadow_ratio:.2f})")
+    if not meets_liquidity:
+        _cond_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
+    if is_euphoric:
+        _cond_fails.append(f"情绪过热(3d={recent_3d_gain:.1f}% 5d={recent_5d_gain:.1f}% 振幅={recent_max_amplitude:.1f}% 涨跌={pct_change:+.2f}%)")
+    if not recently_above_ma5:
+        _cond_fails.append("5天内<3天站在MA5之上")
+    if not is_moderate_change:
+        _cond_fails.append(f"涨跌幅异常(pct_change={pct_change:+.2f}%)")
+
+    if _cond_fails:
+        logger.debug(f"  {name}({code}) 信号1不满足 | {'; '.join(_cond_fails)}")
+    else:
+        logger.info(f"  {name}({code}) ✅ 信号1全部条件满足！")
+
+    # 信号1: 缩量回踩 MA5（主升中的第一次分歧回踩）— 最佳买点
+    # 条件：多头排列 + 守住MA5 + 缩量 + 小实体/小跌 + 换手达标 + 非加速 + 涨跌幅温和
+    if (holds_ma5 and no_volume_blowoff and -1.5 < bias_ma5 < 3.5
+            and has_intraday_support and meets_liquidity
+            and not is_euphoric and recently_above_ma5
+            and is_moderate_change):
+
+        # --- 龙头换手标注（借鉴 dragon_head 策略）---
+        signal_desc = f"第一次分歧回踩MA5，缩量（量比{volume_ratio:.2f}）不破5日线，涨跌{pct_change:+.2f}%"
+        if turnover > 8.0 and 2.0 <= pct_change <= 5.0:
+            signal_desc += " ⭐换手活跃具龙头特征"
+        elif turnover > 5.0:
+            signal_desc += f" 换手{turnover:.1f}%正常"
+
+        # --- 一阳三阴形态标注（借鉴 one_yang_three_yin 策略）---
+        if len(df) >= 4:
+            anchor = df.iloc[-4]
+            anchor_pct = (anchor['close'] - anchor['open']) / anchor['open'] * 100 if anchor['open'] > 0 else 0
+            pullback_days = df.iloc[-3:]
+            if anchor_pct > 3.0 and all(row['close'] < row['open'] for _, row in pullback_days.iterrows()):
+                # 量确认：后三天量递减，且平均量 < 阳线量
+                pullback_volumes = df.iloc[-3:]['volume']
+                if (pullback_volumes.is_monotonic_decreasing
+                        and pullback_volumes.mean() < anchor['volume']):
+                    signal_desc += " 📐一阳三阴形态"
+
+        # 计算动态评分替代硬编码90分
+        s1_metrics = {
+            'bias_ma5': bias_ma5,
+            'volume_ratio': volume_ratio,
+            'pct_change': pct_change,
+            'turnover_rate': turnover,
+            'close_position': close_position,
+            'lower_shadow': lower_shadow_ratio,
+            'recently_above_ma5_count': sum(
+                1 for i in range(-6, -1) if df.iloc[i]['close'] > df.iloc[i]['ma5']
+            ) if len(df) >= 6 else 3,
+        }
+        dynamic_score = _compute_signal_score('pullback_ma5', s1_metrics)
+
+        signals.append(TechnicalSignal(
+            code=code,
+            name=name,
+            signal_type='pullback_ma5',
+            score=dynamic_score,
+            current_price=current_price,
+            ma5=ma5,
+            ma10=ma10,
+            ma20=ma20,
+            bias_ma5=bias_ma5,
+            volume_ratio=volume_ratio,
+            turnover_rate=turnover,
+            pct_change=pct_change,
+            description=signal_desc
+        ))
+
+    # 信号2: 缩量回踩 MA10（次优买点 — 回踩较深，需确认支撑）
+    # 策略强调"不破5日线"，回踩MA10说明分歧较大，评分降低
+    elif (no_volume_blowoff
+          and touches_ma10  # 盘中回踩MA10且收盘守住
+          and has_intraday_support
+          and meets_liquidity
+          and not is_euphoric
+          and not holds_ma5):  # 确实跌破了MA5
+        # 计算动态评分替代硬编码65分
+        s2_metrics = {
+            'bias_ma5': bias_ma5,
+            'volume_ratio': volume_ratio,
+            'pct_change': pct_change,
+            'turnover_rate': turnover,
+            'close_position': close_position,
+            'lower_shadow': lower_shadow_ratio,
+            'touches_ma10': touches_ma10,
+        }
+        dynamic_score_s2 = _compute_signal_score('pullback_ma10', s2_metrics)
+
+        signals.append(TechnicalSignal(
+            code=code,
+            name=name,
+            signal_type='pullback_ma10',
+            score=dynamic_score_s2,
+            current_price=current_price,
+            ma5=ma5,
+            ma10=ma10,
+            ma20=ma20,
+            bias_ma5=bias_ma5,
+            volume_ratio=volume_ratio,
+            turnover_rate=turnover,
+            pct_change=pct_change,
+            description=f"回踩MA10（回踩较深），缩量（量比{volume_ratio:.2f}），涨跌{pct_change:+.2f}%，需次日弱转强确认"
+        ))
+
+    else:
+        # 信号2也未触发，输出信号2专属失败原因
+        _s2_fails = []
+        if holds_ma5:
+            _s2_fails.append("仍守住MA5(需跌破才触发回踩MA10)")
+        if not no_volume_blowoff:
+            _s2_fails.append(f"放量(vol={current_volume:.0f} vs vol_ma5*1.1={volume_ma5*1.1:.0f})")
+        if not touches_ma10:
+            _s2_fails.append(f"未触及MA10(low={latest['low']:.2f} vs ma10*1.01={ma10*1.01:.2f})")
+        if not has_intraday_support:
+            _s2_fails.append(f"日内承接弱(cp={close_position:.2f} us={upper_shadow_ratio:.2f} ls={lower_shadow_ratio:.2f})")
+        if not meets_liquidity:
+            _s2_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
+        if is_euphoric:
+            _s2_fails.append("情绪过热")
+        logger.debug(f"  {name}({code}) 信号2不满足 | {'; '.join(_s2_fails)}")
+
+    # 注意：不放量突破信号 — 策略明确规定"不做加速追高"
+
+    return signals
