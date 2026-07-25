@@ -36,19 +36,39 @@ class AssetAllocation:
 
 
 # ── 中性基准配置 ──
+# 核心仓位：长期持有，gate 驱动战术偏移 + 再平衡
+# 卫星仓池：0 权重预定义，等待板块轮动逻辑触发（暂未实现），不属于中性基准
 
-NEUTRAL_BASELINE: List[AssetAllocation] = [
-    AssetAllocation("510300", "沪深300ETF",    AssetType.EQUITY, 0.20, 3),
-    AssetAllocation("510500", "中证500ETF",    AssetType.EQUITY, 0.10, 4),
-    AssetAllocation("159915", "创业板50ETF",    AssetType.EQUITY, 0.05, 1),
-    AssetAllocation("588000", "科创50ETF",     AssetType.EQUITY, 0.05, 2),
-    AssetAllocation("510880", "红利ETF",       AssetType.EQUITY, 0.05, 6),
-    AssetAllocation("513100", "纳指ETF",       AssetType.EQUITY, 0.05, 5),
-    AssetAllocation("159920", "恒生ETF",       AssetType.EQUITY, 0.05, 3),
-    AssetAllocation("518880", "黄金ETF",       AssetType.GOLD,   0.05, 7),
-    AssetAllocation("511010", "国债ETF",       AssetType.BOND,   0.15, 8),
-    AssetAllocation("511880", "货币ETF",       AssetType.CASH,   0.25, 9),
+CORE_BASELINE: List[AssetAllocation] = [
+    # ── A股宽基 ──
+    AssetAllocation("563360", "A500ETF",                AssetType.EQUITY, 0.17, 8),
+    AssetAllocation("159680", "中证1000增强ETF",         AssetType.EQUITY, 0.01, 6),
+    AssetAllocation("515180", "红利ETF",                AssetType.EQUITY, 0.14, 10),
+    # ── 海外 ──
+    AssetAllocation("513100", "纳指ETF",                AssetType.EQUITY, 0.05, 9),
+    AssetAllocation("513500", "标普500ETF",              AssetType.EQUITY, 0.05, 9),
+    AssetAllocation("513380", "恒生ETF",                AssetType.EQUITY, 0.10, 5),
+    # ── 行业/主题 ──
+    AssetAllocation("159938", "医药ETF",                AssetType.EQUITY, 0.04, 4),
+    AssetAllocation("516560", "养老ETF",                AssetType.EQUITY, 0.02, 7),
+    AssetAllocation("159928", "消费ETF",                AssetType.EQUITY, 0.08, 7),
+    # ── 黄金 ──
+    AssetAllocation("159934", "黄金ETF",                AssetType.GOLD,   0.05, 11),
+    # ── 现金（国债逆回购，自动理财，不买货基） ──
+    AssetAllocation("CASH",   "现金/逆回购",              AssetType.CASH,   0.29, 13),
 ]
+
+# 卫星仓可选池（权重为 0，不参与中性基准再平衡）
+SATELLITE_POOL: List[AssetAllocation] = [
+    AssetAllocation("515010", "证券ETF",                AssetType.EQUITY, 0.00, 2),
+    AssetAllocation("159363", "创业板人工智能ETF",       AssetType.EQUITY, 0.00, 1),
+    AssetAllocation("513120", "港股创新药",              AssetType.EQUITY, 0.00, 3),
+    AssetAllocation("159206", "卫星ETF",                AssetType.EQUITY, 0.00, 2),
+    AssetAllocation("588170", "科创半导体ETF",           AssetType.EQUITY, 0.00, 1),
+]
+
+# 再平衡模块使用核心仓位
+NEUTRAL_BASELINE = CORE_BASELINE
 
 # Gate 状态 → 权益类战术偏移（正数=加权益减现金，负数=减权益加现金）
 GATE_OFFSET: dict = {

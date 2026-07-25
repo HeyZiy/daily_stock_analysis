@@ -58,15 +58,26 @@ class ETFRebalancer:
 
     # ── 计算目标配比 ──
 
-    def calculate_target(self, gate_state: str, hard_intercept: bool) -> Dict[str, float]:
+    def calculate_target(self, gate_state: str = "", hard_intercept: bool = False,
+                          equity_offset: float = None) -> Dict[str, float]:
         """计算当前目标配比
+
+        Args:
+            gate_state: 市场状态（趋势 gate 用），equity_offset 为 None 时生效
+            hard_intercept: 硬拦截标志，equity_offset 为 None 时生效
+            equity_offset: 直接指定权益偏移量，不为 None 时覆盖 gate 逻辑
 
         Returns:
             {code: target_weight} 目标权重（0.0 ~ 1.0）
         """
-        offset = get_gate_offset(gate_state, hard_intercept)
+        if equity_offset is None:
+            equity_offset = get_gate_offset(gate_state, hard_intercept)
+        offset = equity_offset
+
         equity_total = get_equity_total_weight()
-        cash_assets = [a for a in self.baseline if a.asset_type == AssetType.CASH]
+        if equity_total <= 0:
+            logger.warning("权益类总权重为 0，无法计算偏移")
+            return {a.code: a.neutral_weight for a in self.baseline}
 
         target: Dict[str, float] = {}
         for asset in self.baseline:
@@ -110,7 +121,8 @@ class ETFRebalancer:
         """为未持仓的 ETF 补齐行情价格"""
         needed = [
             a.code for a in self.baseline
-            if a.code not in current or (current[a.code].get("current_price", 0) or 0) <= 0
+            if a.code != "CASH"
+            and (a.code not in current or (current[a.code].get("current_price", 0) or 0) <= 0)
         ]
         if not needed:
             return
@@ -159,6 +171,8 @@ class ETFRebalancer:
 
         for asset in self.baseline:
             code = asset.code
+            if code == "CASH":
+                continue
             target_pct = target.get(code, 0.0)
             cur = current.get(code, {"current_pct": 0.0, "market_value": 0.0, "count": 0, "current_price": 0.0, "name": asset.name})
             cur_pct = cur["current_pct"]
@@ -243,21 +257,42 @@ class ETFRebalancer:
     # ── 生成报告 ──
 
     def generate_report(self, target: Dict[str, float], positions: List[dict],
-                        total_assets: float, gate_state: str, hard_intercept: bool,
-                        orders: List[RebalanceOrder], total_deviation: float) -> str:
-        """生成 Markdown 格式的 ETF 配置报告"""
+                         total_assets: float, orders: List[RebalanceOrder],
+                         total_deviation: float,
+                         gate_state: str = "", hard_intercept: bool = False,
+                         equity_offset: float = None,
+                         pe_percentile: float = None, current_pe: float = None) -> str:
+        """生成 Markdown 格式的 ETF 配置报告
+
+        equity_offset/pe_percentile/current_pe 用于 PE 估值 gate 模式；
+        gate_state/hard_intercept 用于趋势 gate 模式（向后兼容）。
+        """
         from datetime import datetime
 
-        offset = get_gate_offset(gate_state, hard_intercept)
         current = self._build_current_map(positions, total_assets)
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+        # 选择偏移来源
+        if equity_offset is None:
+            equity_offset = get_gate_offset(gate_state, hard_intercept)
+        offset = equity_offset
+
+        # 头部信息
+        if pe_percentile is not None and current_pe is not None:
+            level = "极度低估" if pe_percentile < 20 else \
+                    "低估" if pe_percentile < 40 else \
+                    "合理" if pe_percentile < 60 else \
+                    "高估" if pe_percentile < 80 else "极度高估"
+            gate_line = f"**PE 分位**: {pe_percentile:.0f}% ({level}) | **当前 PE**: {current_pe:.1f}"
+        else:
+            gate_line = f"**Gate**: {gate_state}" + (" + 硬拦截" if hard_intercept else "")
+
         lines = [
-            f"# 📊 ETF 长期配置日报",
+            f"# ETF 长期配置日报",
             f"",
-            f"**时间**: {now} | **Gate**: {gate_state}" + (" + 硬拦截" if hard_intercept else ""),
+            f"**时间**: {now} | {gate_line}",
             f"**总资产**: {total_assets:,.0f} 元",
-            f"**战术偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}% 权益",
+            f"**权益偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}% → 现金",
             f"",
             "---",
             "",
@@ -268,16 +303,23 @@ class ETFRebalancer:
         ]
 
         order_map = {o.code: o for o in orders}
+        actual_sum = 0.0
+        rows: List[str] = []
         for asset in self.baseline:
             code = asset.code
             tgt = target.get(code, 0.0) * 100
-            cur = current.get(code, {"current_pct": 0.0}).get("current_pct", 0.0) * 100
+            if code == "CASH":
+                cur = max(0, 100.0 - actual_sum)
+            else:
+                cur = current.get(code, {"current_pct": 0.0}).get("current_pct", 0.0) * 100
+                actual_sum += cur
             dev = tgt - cur
             order = order_map.get(code)
             action = ""
             if order:
                 action = f"{'🟢买' if order.action == 'buy' else '🔴卖'} {order.quantity}股"
-            lines.append(f"| {asset.name} | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} |")
+            rows.append(f"| {asset.name} | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} |")
+        lines.extend(rows)
 
         lines.extend(["", "---", ""])
 

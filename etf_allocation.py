@@ -4,22 +4,29 @@
 ETF 长期配置 — 日度再平衡分析
 ===================================
 
-定位：主账户压舱石。根据市场 gate 状态计算战术偏移，对比 mx-moni 模拟仓持仓，
-生成再平衡建议。
+定位：主账户压舱石。根据市场 gate 状态计算战术偏移，对比持仓，生成再平衡建议。
 
-两种模式：
-  - 分析模式（默认）：盘后跑，用收盘价算目标，出报告 + 保存调仓计划
-  - 执行模式（--execute）：盘中午后跑，读上次分析的计划，按市价执行
+两种持仓源：
+  - MX 模拟仓模式（默认）：通过妙想 API 读取模拟仓持仓
+  - 手动模式（--manual）：读取 data/positions.json，用户手动维护份额
 
 使用方式：
-    python etf_allocation.py                    # 分析模式（盘后 ~16:00）
-    python etf_allocation.py --execute          # 执行模式（盘中 9:30-15:00）
+    python etf_allocation.py                    # MX 模式（需要 MX_APIKEY）
+    python etf_allocation.py --manual           # 手动模式（读取 positions.json）
+    python etf_allocation.py --execute          # 盘中执行调仓（仅 MX 模式）
     python etf_allocation.py --no-notify        # 不发送通知
     python etf_allocation.py --debug            # 调试模式
 
-数据时效：
-  - 分析模式：全部用 akshare 日线收盘价（盘后可用，无需行情实时性）
-  - 执行模式：mx-moni useMarketPrice=true 市价成交（必须在盘中）
+手动模式文件格式（data/positions.json）：
+    {
+      "updated": "2026-07-24",
+      "total_assets": 100000,
+      "positions": {
+        "510300": {"shares": 5000, "cost": 4.20},
+        "511880": {"shares": 5000, "cost": 100.00}
+      }
+    }
+    每次实际交易后手动更新 shares 即可。
 """
 
 import argparse
@@ -37,6 +44,9 @@ from src.logging_config import setup_logging
 setup_env()
 
 from src.analysis.market_gate import check_market_gate
+from src.etf.allocation_gate import check_allocation_gate
+from src.etf.sector_rotation import run_rotation
+from src.etf.config import SATELLITE_POOL
 from src.mx.client import MXMoniClient
 from src.etf.rebalancer import ETFRebalancer
 from src.etf.config import NEUTRAL_BASELINE
@@ -44,10 +54,95 @@ from src.etf.config import NEUTRAL_BASELINE
 logger = logging.getLogger(__name__)
 
 TARGET_FILE = Path(__file__).parent / "data" / "etf_target.json"
+POSITIONS_FILE = Path(__file__).parent / "data" / "positions.json"
 
 # A 股交易时段（北京时间）
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(15, 0)
+
+# 手动模式下 ETF 价格缓存
+_price_cache: Dict[str, float] = {}
+
+
+def _fetch_etf_price(code: str) -> float:
+    """获取 ETF 当前价格，优先收盘价，回退实时价"""
+    if code in _price_cache:
+        return _price_cache[code]
+    # 1. akshare 日线收盘价
+    try:
+        import akshare as ak
+        prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
+        df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
+        if df is not None and not df.empty:
+            price = float(df.sort_values('date').iloc[-1]['close'])
+            _price_cache[code] = price
+            return price
+    except Exception:
+        pass
+    # 2. DataFetcherManager 实时行情
+    try:
+        from data_provider.base import DataFetcherManager
+        fm = DataFetcherManager()
+        quote = fm.get_realtime_quote(code)
+        if quote and hasattr(quote, 'price') and quote.price:
+            price = float(quote.price)
+            _price_cache[code] = price
+            return price
+    except Exception:
+        pass
+    return 0.0
+
+
+def _load_manual_positions() -> Optional[dict]:
+    """读取手动持仓文件，计算当前持仓。返回 (positions_list, total_assets) 或 None"""
+    if not POSITIONS_FILE.exists():
+        logger.error(f"持仓文件不存在: {POSITIONS_FILE}")
+        logger.error("请先创建 data/positions.json，参考格式见脚本头部注释")
+        return None
+
+    raw = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+    total_assets = float(raw.get("total_assets", 0) or 0)
+    raw_positions = raw.get("positions", {})
+
+    if total_assets <= 0:
+        logger.error("positions.json 中的 total_assets 必须 > 0")
+        return None
+
+    positions = []
+    for code, info in raw_positions.items():
+        shares = int(info.get("shares", 0) or 0)
+        cost = float(info.get("cost", 0) or 0)
+        if shares <= 0:
+            continue
+        price = _fetch_etf_price(code)
+        if price <= 0:
+            logger.warning(f"无法获取 {code} 的行情价格，跳过")
+            continue
+        mv = shares * price
+        positions.append({
+            "code": code,
+            "name": info.get("name", ""),
+            "count": shares,
+            "cost_price": cost,
+            "current_price": price,
+            "market_value": mv,
+        })
+
+    if not positions:
+        logger.error("没有有效持仓数据")
+        return None
+
+    return {"positions": positions, "total_assets": total_assets}
+
+
+def _auto_detect_mode(args) -> str:
+    """自动检测运行模式：--manual 优先，否则检查 MX_APIKEY 决定"""
+    if args.manual:
+        return "manual"
+    if not os.environ.get("MX_APIKEY"):
+        logger.info("未设置 MX_APIKEY，自动切换为手动模式")
+        return "manual"
+    return "mx"
 
 
 def _is_market_open() -> bool:
@@ -56,7 +151,8 @@ def _is_market_open() -> bool:
     return MARKET_OPEN <= now <= MARKET_CLOSE
 
 
-def _save_target(target: Dict[str, float], gate_state: str, hard_intercept: bool):
+def _save_target(target: Dict[str, float], gate_state: str, hard_intercept: bool,
+                  equity_offset: float = None):
     TARGET_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "date": datetime.now().strftime("%Y-%m-%d"),
@@ -64,6 +160,8 @@ def _save_target(target: Dict[str, float], gate_state: str, hard_intercept: bool
         "hard_intercept": hard_intercept,
         "target": {k: round(v, 6) for k, v in target.items()},
     }
+    if equity_offset is not None:
+        data["equity_offset"] = equity_offset
     TARGET_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"调仓计划已保存: {TARGET_FILE}")
 
@@ -112,38 +210,67 @@ def _check_mx_setup() -> Optional[MXMoniClient]:
     return mx
 
 
-def run_analysis(args):
+def run_analysis(args, mode: str):
     """分析模式：盘后运行，出报告 + 保存计划"""
-    # 1. Gate
-    can_trade, gate_conditions, gate_summary, gate_state, hard_intercept = check_market_gate()
-    logger.info(f"Gate: {gate_state}" + (" + 硬拦截" if hard_intercept else ""))
+    # 1. Gate：估值门控（PE 分位驱动，逆向配置）
+    equity_offset, pe_pct, current_pe, gate_summary = check_allocation_gate()
     logger.info(gate_summary)
+    gate_state = ""  # 趋势 gate 不再用于 ETF 配置
+    hard_intercept = False
 
     # 2. 持仓
-    mx = _check_mx_setup()
-    if not mx:
-        return 1
-
-    balance = mx.get_balance()
-    total_assets = balance["total_assets"]
-    positions = mx.get_positions()
+    if mode == "manual":
+        manual_data = _load_manual_positions()
+        if not manual_data:
+            logger.error("无法加载手动持仓，请在 data/positions.json 中填写实际持仓")
+            return 1
+        total_assets = manual_data["total_assets"]
+        positions = manual_data["positions"]
+        logger.info(f"手动模式 | 总资产: {total_assets:,.0f} 元 | 持仓 {len(positions)} 只")
+    else:
+        mx = _check_mx_setup()
+        if not mx:
+            return 1
+        balance = mx.get_balance()
+        total_assets = balance["total_assets"]
+        positions = mx.get_positions()
+        logger.info(f"MX 模拟仓 | 总资产: {total_assets:,.0f} 元 | 可用: {balance['avail_balance']:,.0f} 元")
 
     # 3. 计算 + 比较
-    rebalancer = ETFRebalancer(mx)
-    target = rebalancer.calculate_target(gate_state, hard_intercept)
+    rebalancer = ETFRebalancer()
+    target = rebalancer.calculate_target(equity_offset=equity_offset)
     orders, total_deviation = rebalancer.compare(target, positions, total_assets, gate_state, hard_intercept)
 
-    # 4. 保存计划（供 --execute 读取）
-    _save_target(target, gate_state, hard_intercept)
+    # 4. 保存计划
+    _save_target(target, gate_state, hard_intercept, equity_offset)
+
+    # 4.5 板块轮动（卫星仓，独立于核心仓）
+    rotation_section = ""
+    if mode == "manual" and SATELLITE_POOL:
+        try:
+            rot_orders, rotation_section = run_rotation(
+                SATELLITE_POOL, positions, total_assets, pe_pct
+            )
+            logger.info(f"板块轮动: {len(rot_orders)} 笔调仓")
+        except Exception as e:
+            logger.warning(f"板块轮动异常: {e}")
 
     # 5. 出报告
     report = rebalancer.generate_report(
-        target, positions, total_assets, gate_state, hard_intercept,
-        orders, total_deviation
+        target, positions, total_assets, orders, total_deviation,
+        equity_offset=equity_offset, pe_percentile=pe_pct, current_pe=current_pe,
     )
     should_exec, reason = rebalancer.should_rebalance(orders, total_deviation, gate_state)
+    report += "\n\n---\n\n"
+    report += gate_summary
+    if rotation_section:
+        report += "\n\n---\n\n"
+        report += rotation_section
     report += f"\n\n> **再平衡判断**: {'需要' if should_exec else '不需要'} — {reason}"
-    report += "\n> 下次执行: 下个交易日盘中 `python etf_allocation.py --execute`\n"
+    if mode == "mx":
+        report += "\n> 下次执行: 下个交易日盘中 `python etf_allocation.py --execute`\n"
+    else:
+        report += "\n> 手动模式：请在券商执行调仓后更新 data/positions.json\n"
 
     print("\n" + report)
     _save_report(report)
@@ -154,7 +281,7 @@ def run_analysis(args):
 
 
 def run_execute():
-    """执行模式：盘中运行，读上次计划，市价执行"""
+    """执行模式：盘中运行，读上次计划，市价执行（仅 MX 模式）"""
     if not _is_market_open():
         logger.error("当前不在 A 股交易时段（9:30-15:00），无法执行调仓")
         return 1
@@ -221,16 +348,26 @@ def run_execute():
 
 def main():
     parser = argparse.ArgumentParser(description='ETF 长期配置 — 日度再平衡')
-    parser.add_argument('--execute', action='store_true', help='执行模式（盘中运行，按市价调仓）')
+    parser.add_argument('--manual', action='store_true', help='手动模式（读取 data/positions.json）')
+    parser.add_argument('--execute', action='store_true', help='执行模式（盘中运行，按市价调仓，仅 MX 模式）')
     parser.add_argument('--no-notify', action='store_true', help='不发送通知')
     parser.add_argument('--debug', action='store_true', help='调试模式')
     args = parser.parse_args()
 
     setup_logging(log_prefix="etf_allocation", debug=args.debug)
 
-    mode = "执行调仓" if args.execute else "分析"
+    mode = _auto_detect_mode(args)
+
+    if args.execute:
+        if mode == "manual":
+            logger.error("--execute 仅支持 MX 模式，手动模式请自行在券商操作后更新 positions.json")
+            return 1
+        action = "执行调仓"
+    else:
+        action = f"分析（{'手动' if mode == 'manual' else 'MX模拟仓'}）"
+
     logger.info("=" * 60)
-    logger.info(f"ETF 长期配置 — {mode}模式")
+    logger.info(f"ETF 长期配置 — {action}")
     logger.info(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if args.execute:
         logger.info(f"市场状态: {'交易中' if _is_market_open() else '已收盘'}")
@@ -240,7 +377,7 @@ def main():
         if args.execute:
             return run_execute()
         else:
-            return run_analysis(args)
+            return run_analysis(args, mode)
     except Exception as e:
         logger.exception(f"执行失败: {e}")
         return 1
