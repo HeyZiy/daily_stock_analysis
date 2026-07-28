@@ -248,8 +248,6 @@ def generate_technical_report(
     lines = [
         f"# 📊 趋势跟踪日报 ({today_str})",
         "",
-        f"> 定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。",
-        "",
         f"> 共发现 **{len(signals)}** 个技术信号 | 剔除 **{len(removed_stocks)}** 只股票 | 失败 **{len(failed_stocks)}** 只",
         "",
         "---",
@@ -340,18 +338,5 @@ def generate_technical_report(
 
     # 信号汇总（所有模式都有）
     lines.extend(_format_signal_summary(signals))
-
-    # 页脚规则
-    lines.extend([
-        "",
-        "---",
-        "",
-        "**策略规则**:",
-        "- 买点: 主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）",
-        "- 不做: 加速追高、情绪高潮接力、连续大阳后追涨",
-        "- 第一卖点(减仓50%): 放量跌破5日线 / 高位长阴 / 回撤≥5%",
-        "- 第二卖点(清仓): 跌破10日线 / 放量跌破10日线",
-        "- 环境过滤: 满足2/5项市场条件才允许开仓，否则空仓",
-    ])
 
     return "\n".join(lines)
