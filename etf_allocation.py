@@ -212,11 +212,12 @@ def _check_mx_setup() -> Optional[MXMoniClient]:
 
 def run_analysis(args, mode: str):
     """分析模式：盘后运行，出报告 + 保存计划"""
-    # 1. Gate：估值门控（PE 分位驱动，逆向配置）
+    # 1. Gate：双门控
+    #   PE 估值门控 → 决定 equity_offset（战略层：便宜多买，贵多卖）
     equity_offset, pe_pct, current_pe, gate_summary = check_allocation_gate()
     logger.info(gate_summary)
-    gate_state = ""  # 趋势 gate 不再用于 ETF 配置
-    hard_intercept = False
+    #   趋势门控 → 提供执行上下文：阈值松紧、黄金/国债保护、硬拦截检测（战术层）
+    _, _, _, gate_state, hard_intercept = check_market_gate()
 
     # 2. 持仓
     if mode == "manual":

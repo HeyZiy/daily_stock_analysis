@@ -5,7 +5,7 @@
 四项规则：
 1. 连续2天收盘跌破10日线
 2. 放量长阴破趋势（单日跌幅>=5% 且 量比>=2）
-3. 情绪过热（近5日换手均值 > 近20日均值 * 2）
+3. 情绪过热（近5日换手均值 > 近20日均值 * 2，且20日均值>1%避免低基数误触发）
 4. 5日平均换手过低且无活跃换手
 """
 
@@ -60,7 +60,7 @@ def check_removal_rules(code: str, df: pd.DataFrame) -> Tuple[bool, str]:
     if 'turnover_rate' in df.columns and len(df) >= 20:
         r5  = df['turnover_rate'].iloc[-5:].mean()
         r20 = df['turnover_rate'].iloc[-20:].mean()
-        if (pd.notna(r5) and pd.notna(r20) and r20 > 0 and r5 > r20 * 2.0):
+        if (pd.notna(r5) and pd.notna(r20) and r20 > 1.0 and r5 > r20 * 2.0):
             return True, f"情绪过热（近5日换手{r5:.1f}% 是近20日均{r20:.1f}%的{r5/r20:.1f}倍）"
 
     # 规则4：5日平均换手过低，且无单日活跃换手

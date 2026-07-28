@@ -16,11 +16,11 @@ from src.analysis.strategy.signal_detector import TechnicalSignal
 logger = logging.getLogger(__name__)
 
 REGIME_DESC = {
-    "trending_up":   "📈 趋势上行 — 均线多头，适合积极持有缩量回踩信号",
-    "weak_up":       "🌤️ 弱上行 — 站上 MA20 但非标准多头，谨慎入场",
-    "sideways":      "➡️ 震荡横盘 — 紧贴 MA20 震荡，不开新仓，自然退出",
-    "trending_down": "📉 趋势下行 — 均线空头，禁止开仓，加速止损",
-    "chaos":         "🌪️ 混沌 — 门控不足，市场方向不明，禁止开仓",
+    "trending_up":   "📈 趋势上行 — 均线多头排列",
+    "weak_up":       "🌤️ 弱上行 — 站上 MA20 但非标准多头排列",
+    "sideways":      "➡️ 震荡横盘 — 紧贴 MA20 震荡",
+    "trending_down": "📉 趋势下行 — 均线空头排列",
+    "chaos":         "🌪️ 混沌 — 方向不明",
 }
 
 
@@ -93,8 +93,8 @@ def _format_rank_table(signals: List[TechnicalSignal], signal_type: str) -> List
             "",
             "> 只做主升中的第一次像样分歧。缩量回踩，不破5日线。",
             "",
-            "| # | 股票 | 价格 | 涨跌 | 乖离MA5 | 量比 | 换手 | 评分 | 有效分 | 操作要点 | 关键价位 | 确认条件 | 失效条件 | 仓位 |",
-            "|---|------|------|------|---------|------|------|------|--------|----------|----------|----------|----------|------|",
+            "| # | 股票 | 板块 | 价格 | 涨跌 | 乖离MA5 | 量比 | 换手 | 评分 | 有效分 | 操作要点 | 关键价位 | 确认条件 | 失效条件 | 仓位 |",
+            "|---|------|------|------|------|---------|------|------|------|--------|----------|----------|----------|----------|------|",
         ])
     else:
         lines.extend([
@@ -102,8 +102,8 @@ def _format_rank_table(signals: List[TechnicalSignal], signal_type: str) -> List
             "",
             "> 已跌破5日线，回踩较深。策略要求不破5日线，此信号仅作参考。",
             "",
-            "| # | 股票 | 价格 | 涨跌 | 乖离MA5 | 量比 | 换手 | 评分 | 有效分 | 操作要点 | 关键价位 | 确认条件 | 失效条件 | 仓位 |",
-            "|---|------|------|------|---------|------|------|------|--------|----------|----------|----------|----------|------|",
+            "| # | 股票 | 板块 | 价格 | 涨跌 | 乖离MA5 | 量比 | 换手 | 评分 | 有效分 | 操作要点 | 关键价位 | 确认条件 | 失效条件 | 仓位 |",
+            "|---|------|------|------|------|---------|------|------|------|--------|----------|----------|----------|----------|------|",
         ])
 
     for rank, s in enumerate(sorted_signals, 1):
@@ -112,7 +112,7 @@ def _format_rank_table(signals: List[TechnicalSignal], signal_type: str) -> List
         key_levels = f"MA5={s.ma5:.2f} MA10={s.ma10:.2f}"
 
         lines.append(
-            f"| {rank_str} | {s.name}({s.code}) | {s.current_price:.2f} | "
+            f"| {rank_str} | {s.name}({s.code}) | {s.sector} | {s.current_price:.2f} | "
             f"{s.pct_change:+.2f}% | {s.bias_ma5:+.2f}% | "
             f"{s.volume_ratio:.2f} | {s.turnover_rate:.1f}% | "
             f"{s.score} | {s.effective_score} | "
@@ -146,13 +146,13 @@ def _format_t1_plan(signals: List[TechnicalSignal]) -> List[str]:
             "",
             "适合尾盘介入。次日确认条件满足即可执行。",
             "",
-            "| 排名 | 股票 | 评分→有效分 | 介入条件 | 仓位 |",
-            "|------|------|-------------|----------|------|",
+            "| 排名 | 股票 | 板块 | 评分→有效分 | 介入条件 | 仓位 |",
+            "|------|------|------|-------------|----------|------|",
         ])
         for rank, s in enumerate(sorted(high_priority, key=lambda x: x.effective_score, reverse=True), 1):
             guide = _build_action_guide(s)
             lines.append(
-                f"| #{rank} | {s.name}({s.code}) | {s.score}→{s.effective_score} | "
+                f"| #{rank} | {s.name}({s.code}) | {s.sector} | {s.score}→{s.effective_score} | "
                 f"{guide['confirmation']} | {guide['sizing']} |"
             )
         lines.append("")
@@ -163,13 +163,13 @@ def _format_t1_plan(signals: List[TechnicalSignal]) -> List[str]:
             "",
             "需更强确认信号。建议尾盘观察确认后再决定。",
             "",
-            "| 排名 | 股票 | 评分→有效分 | 介入条件 | 仓位 |",
-            "|------|------|-------------|----------|------|",
+            "| 排名 | 股票 | 板块 | 评分→有效分 | 介入条件 | 仓位 |",
+            "|------|------|------|-------------|----------|------|",
         ])
         for rank, s in enumerate(sorted(medium_priority, key=lambda x: x.effective_score, reverse=True), 1):
             guide = _build_action_guide(s)
             lines.append(
-                f"| #{rank} | {s.name}({s.code}) | {s.score}→{s.effective_score} | "
+                f"| #{rank} | {s.name}({s.code}) | {s.sector} | {s.score}→{s.effective_score} | "
                 f"{guide['confirmation']} | {guide['sizing']} |"
             )
         lines.append("")
@@ -216,7 +216,7 @@ def _format_signal_summary(signals: List[TechnicalSignal]) -> List[str]:
         if s.regime_note:
             desc_parts.append(f"[{s.regime_note}]")
 
-        lines.append(f"{emoji} **{s.name}({s.code})**: {' | '.join(desc_parts)} | 评分:{s.score}→有效{effective}")
+        lines.append(f"{emoji} **{s.name}({s.code})** [{s.sector}]: {' | '.join(desc_parts)} | 评分:{s.score}→有效{effective}")
 
     return lines
 

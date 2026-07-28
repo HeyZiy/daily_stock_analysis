@@ -266,14 +266,25 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
         return False, conditions, summary, "chaos", True
 
     # ── 门控判定 ──
-    can_trade = met_count >= 2
+    # 先判定市场状态（均线结构），再结合门控项数决定是否开仓
+    regime = _detect_regime(index_df if index_df is not None else None, met_count)
+
+    if regime == "trending_down":
+        # 均线空头下提高门槛：需满足 3/4 而非 2/4
+        can_trade = met_count >= 3
+        if can_trade:
+            details.append(f"⚠ 均线空头排列，但门控满足{met_count}/4项（≥3/4），谨慎放行")
+            logger.info(f"⚠ 均线空头但门控充足（{met_count}/4），允许开仓")
+        else:
+            details.append(f"📉 均线空头排列，门控仅满足{met_count}/4项（需≥3），禁止开仓")
+    else:
+        can_trade = met_count >= 2
+
     env_icon = "✅ 允许开仓" if can_trade else "❌ 建议空仓"
     summary = (
         f"市场环境检查：满足{met_count}/4项条件 → {env_icon}\n"
         + "\n".join(details)
     )
-
-    regime = _detect_regime(index_df if index_df is not None else None, met_count)
 
     if can_trade:
         logger.info(f"✅ 市场环境满足开仓条件（{met_count}/4，状态: {regime}）")

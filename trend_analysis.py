@@ -143,7 +143,19 @@ class SimpleTechnicalAnalyzer:
         except Exception as e:
             logger.warning(f"获取 {code} 数据失败: {e}")
             return None
-    
+
+    def _fetch_stock_sector(self, code: str) -> str:
+        """获取股票所属板块名称，失败返回空串"""
+        try:
+            from data_provider.efinance_fetcher import EfinanceFetcher
+            ef = EfinanceFetcher()
+            df = ef.get_belong_board(code)
+            if df is not None and not df.empty and "板块名称" in df.columns:
+                return str(df["板块名称"].iloc[0])
+        except Exception:
+            pass
+        return ""
+
     def analyze_all_stocks(self, stock_list: List[Tuple[str, str]], 
                           max_stocks: Optional[int] = None,
                           sort_by_pct: bool = True) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]], List[Tuple[str, str, str]]]:
@@ -190,10 +202,15 @@ class SimpleTechnicalAnalyzer:
                     continue
 
                 signals = detect_pullback_signals(code, name, df)
-                all_signals.extend(signals)
 
                 if signals:
-                    logger.info(f"✅ {name}({code}): 发现 {len(signals)} 个信号")
+                    sector = self._fetch_stock_sector(code)
+                    for s in signals:
+                        s.sector = sector
+                    logger.info(f"✅ {name}({code}) [{sector}]: 发现 {len(signals)} 个信号")
+                else:
+                    logger.info(f"    {name}({code}) 无信号")
+                all_signals.extend(signals)
 
                 if (i + 1) % 10 == 0:
                     logger.info(f"进度: {i + 1}/{len(stock_list)}")

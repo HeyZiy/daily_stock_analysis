@@ -33,6 +33,7 @@ class TechnicalSignal:
     pct_change: float = 0.0  # 当日涨跌幅
     effective_score: int = 0  # 经市场环境调节后的有效评分
     regime_note: str = ""  # 环境调节说明（如"趋势下行×0.75"）
+    sector: str = ""  # 所属板块名称
     description: str = ""  # 信号描述
 
 
