@@ -243,6 +243,18 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         if pct_change > 7.0:
             is_euphoric = True
 
+    # 4.5 妖股拦截：近5个交易日涨停 ≥ 3 次 → 行为异常，信号不可靠
+    is_monster = False
+    monster_limit_up = 0
+    if len(df) >= 6:
+        for i in range(-5, 0):
+            _prev_close = df.iloc[i - 1]['close']
+            _cur_close = df.iloc[i]['close']
+            if _prev_close > 0 and (_cur_close - _prev_close) / _prev_close >= 0.095:
+                monster_limit_up += 1
+        if monster_limit_up >= 3:
+            is_monster = True
+
     # 5. 量能检查：当日成交量 < 5日均量 * 1.1（不允许爆量，而非必须地量）
     current_volume = latest['volume']
     volume_ma5 = df['volume'].rolling(5).mean().iloc[-1] if len(df) >= 5 else 0
@@ -276,6 +288,8 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         _cond_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
     if is_euphoric:
         _cond_fails.append(f"情绪过热(3d={recent_3d_gain:.1f}% 5d={recent_5d_gain:.1f}% 振幅={recent_max_amplitude:.1f}% 涨跌={pct_change:+.2f}%)")
+    if is_monster:
+        _cond_fails.append(f"妖股(近5日涨停{monster_limit_up}次)")
     if not recently_above_ma5:
         _cond_fails.append("5天内<3天站在MA5之上")
     if not is_moderate_change:
@@ -290,7 +304,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     # 条件：多头排列 + 守住MA5 + 缩量 + 小实体/小跌 + 换手达标 + 非加速 + 涨跌幅温和
     if (holds_ma5 and no_volume_blowoff and -1.5 < bias_ma5 < 3.5
             and has_intraday_support and meets_liquidity
-            and not is_euphoric and recently_above_ma5
+            and not is_euphoric and not is_monster and recently_above_ma5
             and is_moderate_change):
 
         # --- 龙头换手标注（借鉴 dragon_head 策略）---
@@ -349,6 +363,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
           and has_intraday_support
           and meets_liquidity
           and not is_euphoric
+          and not is_monster
           and not holds_ma5):  # 确实跌破了MA5
         # 计算动态评分替代硬编码65分
         s2_metrics = {
