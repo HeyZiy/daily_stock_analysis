@@ -76,6 +76,11 @@ jobs:
           STOCK_LIST: ${{ vars.STOCK_LIST }}
           
           # ==========================================
+          # 松筛选股关键词（内联于 trend_analysis）
+          # ==========================================
+          SMART_SCREEN_KEYWORD: ${{ vars.SMART_SCREEN_KEYWORD || secrets.SMART_SCREEN_KEYWORD }}
+          
+          # ==========================================
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO

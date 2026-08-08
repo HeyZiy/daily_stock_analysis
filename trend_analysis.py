@@ -49,6 +49,12 @@ setup_env()
 
 logger = logging.getLogger(__name__)
 
+# 松筛默认关键词：宽松条件，保证池子不会饿死。精筛由 signal_detector 负责。
+DEFAULT_SCREEN_KEYWORD = (
+    "市值大于30亿小于500亿；均线多头排列；换手率大于3%；"
+    "不要科创板不要创业板不要北交所不要ST"
+)
+
 
 class SimpleTechnicalAnalyzer:
     """
@@ -156,6 +162,39 @@ class SimpleTechnicalAnalyzer:
             pass
         return ""
 
+    def screen_new_candidates(self, keyword: str, page_size: int = 30) -> List[Tuple[str, str]]:
+        """MX 松筛发现新候选，返回 [(code, name), ...]
+
+        仅用于发现观察池新名字，不做精筛（精筛交给 signal_detector）。
+        解析 MX 返回的中文列名，字段名可能带日期后缀，做防御式匹配。
+        """
+        try:
+            rows, total = self.mx_service.screen_stocks(keyword, page_no=1, page_size=page_size)
+            if not rows:
+                logger.warning(f"松筛无结果（关键词: {keyword}）")
+                return []
+            candidates = []
+            for row in rows:
+                code = None
+                name = ""
+                for k, v in row.items():
+                    ks = str(k)
+                    # 代码列：列名可能是"代码"或"股票代码"，排除"市场代码简称"
+                    if "市场" in ks:
+                        continue
+                    if "代码" in ks and code is None:
+                        code = str(v or "").strip()
+                    elif "简称" in ks or "名称" in ks:
+                        name = str(v or "").strip()
+                if code:
+                    code = code.replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
+                    candidates.append((code, name or code))
+            logger.info(f"松筛返回 {total} 条，解析到 {len(candidates)} 个候选")
+            return candidates
+        except Exception as e:
+            logger.warning(f"松筛失败: {e}")
+            return []
+
     def analyze_all_stocks(self, stock_list: List[Tuple[str, str]], 
                           max_stocks: Optional[int] = None,
                           sort_by_pct: bool = True) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]], List[Tuple[str, str, str]]]:
@@ -259,6 +298,25 @@ def parse_arguments() -> argparse.Namespace:
         help='每天最多分析多少只股票（按跌幅排序优先分析跌幅大的）'
     )
 
+    parser.add_argument(
+        '--no-screen',
+        action='store_true',
+        help='不执行松筛选股（默认在非 --stocks 模式下自动执行，往自选池补充新候选）'
+    )
+
+    parser.add_argument(
+        '--screen-keyword',
+        type=str,
+        default=None,
+        help='松筛选股关键词（默认使用内置宽松条件，可用 SMART_SCREEN_KEYWORD 覆盖）'
+    )
+
+    parser.add_argument(
+        '--list',
+        action='store_true',
+        help='仅列出当前自选池，不执行分析'
+    )
+
     trade_group = parser.add_argument_group('交易模式（可选）')
     trade_group.add_argument(
         '--trade',
@@ -277,6 +335,22 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def _list_self_selected(analyzer: 'SimpleTechnicalAnalyzer') -> int:
+    """列出当前妙想自选池。"""
+    try:
+        stock_codes, name_mapping = analyzer.mx_service.fetch_self_selected()
+        if not stock_codes:
+            logger.info("当前自选池为空")
+            return 0
+        logger.info(f"当前自选池共 {len(stock_codes)} 只:")
+        for code in stock_codes:
+            logger.info(f"  {code} {name_mapping.get(code, '')}")
+        return 0
+    except Exception as e:
+        logger.error(f"获取自选池失败: {e}")
+        return 1
 
 
 def _save_report(report: str) -> str:
@@ -320,7 +394,12 @@ def main():
     
     try:
         analyzer = SimpleTechnicalAnalyzer()
-        
+
+        # 0. 列出自选池模式
+        if args.list:
+            logger.info("模式: 列出当前自选池")
+            return _list_self_selected(analyzer)
+
         max_stocks = args.max_stocks
         if max_stocks is None:
             max_stocks = int(os.getenv('MAX_STOCKS_PER_DAY', '0')) or None
@@ -332,9 +411,34 @@ def main():
             name_mapping = {code: code for code in stock_codes}
             logger.info(f"使用指定股票列表: {stock_codes}")
         else:
-            # 从妙想获取
+            # 从妙想获取当前自选池
             stock_codes, name_mapping = analyzer.mx_service.fetch_self_selected()
-        
+
+            # 1.5 松筛：发现新候选并补充进自选池（观察池发现环节，不做精筛）
+            if not args.no_screen:
+                keyword = args.screen_keyword or os.getenv('SMART_SCREEN_KEYWORD') or DEFAULT_SCREEN_KEYWORD
+                logger.info(f"执行松筛选股: {keyword}")
+                candidates = analyzer.screen_new_candidates(keyword)
+                if candidates:
+                    existing = set(stock_codes)
+                    new_codes = [c for c, _ in candidates if c not in existing]
+                    if new_codes:
+                        logger.info(f"发现 {len(new_codes)} 只新候选: {new_codes}")
+                        # 写入妙想自选池，并合并进待分析列表
+                        added = analyzer.mx_service.add_self_select(",".join(new_codes))
+                        if added:
+                            logger.info(f"已加入妙想自选池 {len(new_codes)} 只")
+                            for c, n in candidates:
+                                if c in new_codes:
+                                    stock_codes.append(c)
+                                    name_mapping[c] = n
+                        else:
+                            logger.warning("加入自选池失败，新候选本次不分析")
+                    else:
+                        logger.info("无新候选，池子已覆盖")
+                else:
+                    logger.info("松筛无结果，跳过")
+
         if not stock_codes:
             logger.error("没有获取到股票列表，退出")
             return 1

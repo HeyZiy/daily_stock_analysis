@@ -64,9 +64,10 @@ python etf_allocation.py --execute    # 盘中执行，市价调仓
 1 万练手。均线多头 + 缩量回踩 MA5 买点，趋势破坏即卖。不做加速追高，不做情绪高潮接力。
 
 ```bash
-python trend_analysis.py              # 日度分析
+python trend_analysis.py              # 日度分析（含松筛选股）
 python trend_analysis.py --debug      # 调试模式
-python stock_selector.py "均线多头"   # 选股
+python trend_analysis.py --list       # 列出自选池
+python trend_analysis.py --screen-keyword "均线多头"  # 自定义选股
 ```
 
 📖 策略文档：[docs/trend_strategy.md](docs/trend_strategy.md)
@@ -82,8 +83,7 @@ python stock_selector.py "均线多头"   # 选股
 ## 模块清单
 
 ```
-trend_analysis.py       — 趋势交易策略（信号检测 + 报告 + 通知）
-stock_selector.py       — 选股器（妙想 MX API 智能选股）
+trend_analysis.py       — 趋势交易策略（松筛选股 + 信号检测 + 报告 + 通知）
 etf_allocation.py       — ETF 长期配置（再平衡分析 + 执行）
 
 src/
@@ -110,11 +110,10 @@ docs/
 ```
 北京时间
 15:00  收盘
-15:30  ① stock_selector    → 初筛候选股，写妙想自选
-16:00  ② trend_analysis    → 趋势策略分析 + 买卖信号报告
-16:00  ③ etf_allocation    → ETF 再平衡分析（出计划，暂不执行）
+16:00  ① trend_analysis    → 松筛选股补充自选池 + 趋势策略分析 + 买卖信号报告
+16:00  ② etf_allocation    → ETF 再平衡分析（出计划，暂不执行）
        ─── 次日盘中 ───
- 9:35  ④ etf_allocation --execute → 执行昨日再平衡计划（手动/可选）
+ 9:35  ③ etf_allocation --execute → 执行昨日再平衡计划（手动/可选）
 ```
 
 ---
@@ -168,9 +167,9 @@ cp .env.example .env
 # 填入 MX_APIKEY 和通知渠道
 
 # === 趋势交易策略 ===
-python trend_analysis.py                    # 完整分析
+python trend_analysis.py                    # 完整分析（含松筛选股）
 python trend_analysis.py --debug --no-notify  # 调试
-python stock_selector.py "均线多头，涨幅2%-7%"  # 选股
+python trend_analysis.py --list             # 列出自选池
 
 # === ETF 长期配置 ===
 python etf_allocation.py                    # 盘后分析

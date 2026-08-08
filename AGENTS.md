@@ -3,8 +3,7 @@
 ## Architecture
 
 ```
-trend_analysis.py   → 趋势交易策略：信号检测 + 门控过滤 + 报告 + 通知
-stock_selector.py   → 选股器：MX API 智能选股，写入妙想自选
+trend_analysis.py   → 趋势交易策略：松筛选股 + 信号检测 + 门控过滤 + 报告 + 通知（含 --list 列自选池）
 etf_allocation.py   → ETF 长期配置：再平衡分析 + 盘中执行
 
 src/analysis/market_gate.py  ← 共享门控模块（硬拦截 + 4项条件 + 5级状态）
@@ -19,11 +18,11 @@ data_provider/                 ← 多源行情数据（efinance > akshare > tus
 ## Commands
 
 ```bash
-python trend_analysis.py                    # 日度趋势分析
+python trend_analysis.py                    # 日度趋势分析（默认先松筛补充自选池再分析）
+python trend_analysis.py --no-screen        # 跳过松筛，只分析当前自选池
+python trend_analysis.py --screen-keyword "..."  # 自定义松筛条件
 python trend_analysis.py --debug --no-notify
 python trend_analysis.py --stocks 000001,600519
-
-python stock_selector.py "均线多头，涨幅2%-7%"
 
 python etf_allocation.py                    # ETF 盘后分析
 python etf_allocation.py --execute          # ETF 盘中调仓
@@ -41,7 +40,7 @@ No test suite, no lint/typecheck commands.
 ## CI
 
 - GitHub Actions, Python 3.11 on `ubuntu-latest`
-- Runs weekdays at 13:30 Beijing time (UTC 05:30)
+- `trend_analysis.yml` runs weekdays at 13:30 Beijing time (UTC 05:30); screening is inline (was a separate `smart_screen.yml` job)
 - Auto-tag on `main` push commits containing `#patch`, `#minor`, or `#major`
 - Release auto-created on `v*.*.*` annotated tag push
 
