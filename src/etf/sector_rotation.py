@@ -156,11 +156,46 @@ def _score_etf(code: str, name: str) -> dict:
     else:
         score_vol = 0
 
-    total = round(score_20d + score_5d + score_ma + score_vol)
+    # 行业估值/拥挤度因子（AmazingData，失败不影响打分）
+    industry = None
+    pe_pct = pb_pct = share_pct = None
+    score_adj = 0
+    try:
+        from src.etf.amazing_factors import (
+            get_etf_industry,
+            get_industry_code_by_name,
+            get_industry_pe_percentile,
+            get_industry_mcap_share,
+        )
+
+        industry = get_etf_industry(code)
+        if industry:
+            ind_code = get_industry_code_by_name(industry)
+            if ind_code:
+                pe_info = get_industry_pe_percentile(ind_code)
+                if pe_info:
+                    pe_pct = pe_info["pe_pct"]
+                    if pe_pct < 30:
+                        score_adj += 10      # 行业低估，加分
+                    elif pe_pct < 60:
+                        score_adj += 5       # 合理
+                    elif pe_pct >= 80:
+                        score_adj -= 10      # 行业高估，回避
+                mcap_info = get_industry_mcap_share(ind_code)
+                if mcap_info:
+                    share_pct = mcap_info["share_pct"]
+                    if share_pct > 90:
+                        score_adj -= 5       # 拥挤度警示
+    except Exception as e:
+        logger.debug(f"行业因子获取失败（{code}）: {e}")
+
+    total = round(score_20d + score_5d + score_ma + score_vol + score_adj)
     return {
-        "code": code, "name": name, "score": min(95, total),
+        "code": code, "name": name, "score": min(95, max(0, total)),
         "ret_20d": round(ret_20d, 1), "ret_5d": round(ret_5d, 1),
         "ma_align": score_ma, "vol_ok": score_vol,
+        "industry": industry, "pe_pct": pe_pct, "pb_pct": pb_pct,
+        "share_pct": share_pct, "score_adj": score_adj,
     }
 
 

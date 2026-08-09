@@ -262,20 +262,23 @@ class StockTrendAnalyzer:
         return result
     
     def _calculate_mas(self, df: pd.DataFrame) -> pd.DataFrame:
-        """计算均线"""
+        """计算均线（numba 算子加速，AmazingData 不可用时回退 pandas）"""
+        from data_provider.numba_indicators import ma
+
         df = df.copy()
-        df['ma5'] = df['close'].rolling(window=5).mean()
-        df['ma10'] = df['close'].rolling(window=10).mean()
-        df['ma20'] = df['close'].rolling(window=20).mean()
+        # 与原实现 rolling(window=n) 一致：不足窗口返回 NaN
+        df['ma5'] = ma(df['close'], 5, min_periods=5)
+        df['ma10'] = ma(df['close'], 10, min_periods=10)
+        df['ma20'] = ma(df['close'], 20, min_periods=20)
         if len(df) >= 60:
-            df['ma60'] = df['close'].rolling(window=60).mean()
+            df['ma60'] = ma(df['close'], 60, min_periods=60)
         else:
             df['ma60'] = df['ma20']  # 数据不足时使用 ma20 替代
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算 MACD 指标
+        计算 MACD 指标（numba 算子加速）
 
         公式：
         - EMA(12)：12日指数移动平均
@@ -284,55 +287,30 @@ class StockTrendAnalyzer:
         - DEA = EMA(DIF, 9)
         - MACD = (DIF - DEA) * 2
         """
+        from data_provider.numba_indicators import macd
+
         df = df.copy()
-
-        # 计算快慢线 EMA
-        ema_fast = df['close'].ewm(span=self.MACD_FAST, adjust=False).mean()
-        ema_slow = df['close'].ewm(span=self.MACD_SLOW, adjust=False).mean()
-
-        # 计算快线 DIF
-        df['MACD_DIF'] = ema_fast - ema_slow
-
-        # 计算信号线 DEA
-        df['MACD_DEA'] = df['MACD_DIF'].ewm(span=self.MACD_SIGNAL, adjust=False).mean()
-
-        # 计算柱状图
-        df['MACD_BAR'] = (df['MACD_DIF'] - df['MACD_DEA']) * 2
-
+        macd_df = macd(df['close'], fast=self.MACD_FAST, slow=self.MACD_SLOW, signal=self.MACD_SIGNAL)
+        df['MACD_DIF'] = macd_df['MACD_DIF']
+        df['MACD_DEA'] = macd_df['MACD_DEA']
+        df['MACD_BAR'] = macd_df['MACD_BAR']
         return df
 
     def _calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算 RSI 指标
+        计算 RSI 指标（numba 算子加速）
 
         公式：
         - RS = 平均上涨幅度 / 平均下跌幅度
         - RSI = 100 - (100 / (1 + RS))
         """
+        from data_provider.numba_indicators import rsi
+
         df = df.copy()
 
         for period in [self.RSI_SHORT, self.RSI_MID, self.RSI_LONG]:
-            # 计算价格变化
-            delta = df['close'].diff()
-
-            # 分离上涨和下跌
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
-
-            # 计算平均涨跌幅
-            avg_gain = gain.rolling(window=period).mean()
-            avg_loss = loss.rolling(window=period).mean()
-
-            # 计算 RS 和 RSI
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-
-            # 填充 NaN 值
-            rsi = rsi.fillna(50)  # 默认中性值
-
-            # 添加到 DataFrame
             col_name = f'RSI_{period}'
-            df[col_name] = rsi
+            df[col_name] = rsi(df['close'], period)
 
         return df
     

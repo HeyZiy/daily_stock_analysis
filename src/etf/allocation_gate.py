@@ -53,24 +53,55 @@ def _pe_to_offset(pe_pct: float) -> float:
 
 def _fetch_pe_data():
     """获取 A 股整体 PE 历史数据"""
+    # 优先 AmazingData：31 个申万一级行业市值加权聚合 PE（数据口径稳定，含历史分位）
+    try:
+        from src.etf.amazing_factors import get_market_pe
+
+        market = get_market_pe()
+        if market:
+            return market["pe_pct"], market["pe"], None, ""
+    except Exception:
+        pass
+
     import akshare as ak
 
     df = None
-    for symbol in ["全市场", "全部A股", "all"]:
-        try:
-            df = ak.stock_a_pe_lg(symbol=symbol)
-            if df is not None and not df.empty and "average_pe" in df.columns:
-                break
-        except Exception:
-            continue
 
-    if df is None or df.empty:
-        try:
-            df = ak.stock_a_pe_lg(symbol="沪深300")
-        except Exception:
-            pass
+    # 新版 akshare（1.18+）：stock_a_pe_lg 已移除，拆分为 stock_market_pe_lg / stock_index_pe_lg
+    if hasattr(ak, "stock_market_pe_lg"):
+        for symbol in ["沪深300", "上证"]:
+            try:
+                df = ak.stock_market_pe_lg(symbol=symbol)
+                if df is not None and not df.empty:
+                    # 不同 symbol 返回列名不一致（如 沪深300: 日期/指数值/市盈率；上证: 日期/指数/平均市盈率），动态匹配
+                    df = df.rename(
+                        columns={
+                            col: "date"
+                            for col in df.columns
+                            if "日期" in str(col) or str(col).lower() == "date"
+                        }
+                    )
+                    pe_col = next(
+                        (c for c in df.columns if "市盈率" in str(c) or str(c).lower() in ("pe", "average_pe")),
+                        None,
+                    )
+                    if pe_col:
+                        df = df.rename(columns={pe_col: "average_pe"})
+                    break
+            except Exception:
+                continue
 
+    # 旧版 akshare 兼容路径
     if df is None or df.empty:
+        for symbol in ["全市场", "全部A股", "all", "沪深300"]:
+            try:
+                df = ak.stock_a_pe_lg(symbol=symbol)
+                if df is not None and not df.empty and "average_pe" in df.columns:
+                    break
+            except Exception:
+                continue
+
+    if df is None or df.empty or "average_pe" not in df.columns:
         return 50.0, 0.0, None, "无法获取 PE 数据"
 
     df = df.sort_values("date").reset_index(drop=True)
@@ -88,6 +119,16 @@ def _fetch_pe_data():
 
 def _fetch_bond_yield() -> float:
     """获取中国 10 年期国债收益率"""
+    # 优先 AmazingData（稳定），失败降级 akshare
+    try:
+        from src.etf.amazing_factors import get_treasury_yield_y10
+
+        yield_10 = get_treasury_yield_y10()
+        if yield_10 and yield_10 > 0:
+            return yield_10
+    except Exception:
+        pass
+
     try:
         import akshare as ak
         df = ak.bond_china_yield()

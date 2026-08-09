@@ -420,32 +420,32 @@ class BaseFetcher(ABC):
     
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算技术指标
-        
+        计算技术指标（numba 算子加速，AmazingData 不可用时回退 pandas）
+
         计算指标：
         - MA5, MA10, MA20: 移动平均线
         - Volume_Ratio: 量比（今日成交量 / 5日平均成交量）
         """
+        from .numba_indicators import ma, volume_ratio as _volume_ratio
+
         df = df.copy()
-        
+
         # 移动平均线
-        df['ma5'] = df['close'].rolling(window=5, min_periods=1).mean()
-        df['ma10'] = df['close'].rolling(window=10, min_periods=1).mean()
-        df['ma20'] = df['close'].rolling(window=20, min_periods=1).mean()
-        
+        df['ma5'] = ma(df['close'], 5, min_periods=1)
+        df['ma10'] = ma(df['close'], 10, min_periods=1)
+        df['ma20'] = ma(df['close'], 20, min_periods=1)
+
         # 量比：当日成交量 / 5日平均成交量
         # 注意：此处的 volume_ratio 是“日线成交量 / 前5日均量(shift 1)”的相对倍数，
         # 与部分交易软件口径的“分时量比（同一时刻对比）”不同，含义更接近“放量倍数”。
         # 该行为目前保留（按需求不改逻辑）。
-        avg_volume_5 = df['volume'].rolling(window=5, min_periods=1).mean()
-        df['volume_ratio'] = df['volume'] / avg_volume_5.shift(1)
-        df['volume_ratio'] = df['volume_ratio'].fillna(1.0)
-        
+        df['volume_ratio'] = _volume_ratio(df['volume'])
+
         # 保留2位小数
         for col in ['ma5', 'ma10', 'ma20', 'volume_ratio']:
             if col in df.columns:
                 df[col] = df[col].round(2)
-        
+
         return df
     
     @staticmethod
@@ -505,6 +505,7 @@ class DataFetcherManager:
         优先级动态调整逻辑：
         - 如果配置了 TUSHARE_TOKEN：Tushare 优先级提升为 0（最高）
         - 否则按默认优先级：
+          0. AmazingDataFetcher (Priority 0) - 配置了 TGW 凭证时启用
           0. EfinanceFetcher (Priority 0) - 最高优先级
           1. AkshareFetcher (Priority 1)
           2. TushareFetcher (Priority 2)
@@ -531,6 +532,19 @@ class DataFetcherManager:
             baostock,
             yfinance,
         ]
+
+        # 配置了 TGW 凭证时启用 AmazingData（优先数据源）
+        try:
+            from .amazingdata_fetcher import AmazingDataFetcher, tgw_configured
+
+            if tgw_configured():
+                amazing = AmazingDataFetcher()
+                self._fetchers.append(amazing)
+                logger.info("已启用 AmazingDataFetcher（星耀数智，TGW 凭证已配置）")
+            else:
+                logger.debug("未配置 TGW 凭证，跳过 AmazingDataFetcher")
+        except Exception as e:
+            logger.warning(f"AmazingDataFetcher 初始化失败，已跳过: {e}")
 
         # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 0）
         self._fetchers.sort(key=lambda f: f.priority)

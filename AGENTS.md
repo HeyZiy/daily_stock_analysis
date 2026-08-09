@@ -5,7 +5,7 @@
 ```
 strategy_planner.py  → 策略规划器：市场诊断 + 策略适配 + 策略自进化
 trend_analysis.py    → 趋势交易策略：松筛选股 + 信号检测 + 门控过滤 + 报告 + 通知
-etf_observe.py       → ETF 周度观察：PE 估值仓位建议 + 板块轮动关注列表
+etf_observe.py       → ETF 周度观察：市场估值概览 + 买入优先级（按 PE 便宜度排序）+ 卖出警示（极端条件）
 
 src/strategy_planner/           ← 策略规划器（数据采集 + 策略池 + LLM 分析 + 报告）
 src/analysis/market_gate.py     ← 共享门控模块（硬拦截 + 4项条件 + 5级状态）

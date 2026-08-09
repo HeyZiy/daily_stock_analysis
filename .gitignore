@@ -77,3 +77,4 @@ static/
 /apps/dsa-desktop/node_modules/
 
 skills/
+*.whl

@@ -58,14 +58,8 @@ CORE_BASELINE: List[AssetAllocation] = [
     AssetAllocation("CASH",   "现金/逆回购",              AssetType.CASH,   0.29, 13),
 ]
 
-# 卫星仓可选池（权重为 0，不参与中性基准再平衡）
-SATELLITE_POOL: List[AssetAllocation] = [
-    AssetAllocation("515010", "证券ETF",                AssetType.EQUITY, 0.00, 2),
-    AssetAllocation("159363", "创业板人工智能ETF",       AssetType.EQUITY, 0.00, 1),
-    AssetAllocation("513120", "港股创新药",              AssetType.EQUITY, 0.00, 3),
-    AssetAllocation("159206", "卫星ETF",                AssetType.EQUITY, 0.00, 2),
-    AssetAllocation("588170", "科创半导体ETF",           AssetType.EQUITY, 0.00, 1),
-]
+# 卫星仓可选池（权重为 0，不参与中性基准再平衡。当前为空，轮动暂不激活。）
+SATELLITE_POOL: List[AssetAllocation] = []
 
 # 再平衡模块使用核心仓位
 NEUTRAL_BASELINE = CORE_BASELINE
