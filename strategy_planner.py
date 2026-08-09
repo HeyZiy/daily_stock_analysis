@@ -161,17 +161,9 @@ def main():
     if not args.no_notify:
         try:
             from src.notify.service import NotificationService
-            from src.config import get_config
-            config = get_config()
-
-            subject = f"📊 策略规划 - {today_str} {weekday_str} - {diagnosis.get('phase', 'N/A')}"
 
             notify = NotificationService()
-            notify.send_markdown(
-                subject=subject,
-                markdown_content=report,
-                config=config,
-            )
+            notify.send(report)
             logger.info("通知已发送")
         except Exception as e:
             logger.warning(f"通知发送失败: {e}")

@@ -50,7 +50,30 @@ SW_INDUSTRIES = [
 
 
 def _fetch_index_data(symbol: str, name: str, market: str = "A") -> Optional[pd.DataFrame]:
-    """获取指数日线数据"""
+    """获取指数日线数据（AmazingData 优先，akshare 兜底）"""
+    # AmazingData：A 股指数直接支持（000001.SH 等格式）
+    if market == "A":
+        try:
+            from data_provider.amazingdata_fetcher import AmazingDataFetcher
+            from AmazingData.utils.constant import Period
+
+            AmazingDataFetcher.ensure_login()
+            tgw_code = f"{symbol}.SH" if symbol.startswith("000") else f"{symbol}.SZ"
+            kline = AmazingDataFetcher._market_data.query_kline(
+                [tgw_code],
+                begin_date=20200101,
+                end_date=int(date.today().strftime("%Y%m%d")),
+                period=Period.day.value,
+            )
+            df = kline.get(tgw_code)
+            if df is not None and not df.empty:
+                df = df.rename(columns={"kline_time": "date"})
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.sort_values("date").reset_index(drop=True)
+                return df
+        except Exception as e:
+            logger.debug(f"AmazingData 获取指数 {name} 失败，降级 akshare: {e}")
+
     try:
         import akshare as ak
         if market == "A":
@@ -140,7 +163,30 @@ def collect_index_performance(lookback_days: int = 30) -> Dict[str, Any]:
 
 
 def collect_sector_performance() -> List[Dict[str, Any]]:
-    """收集申万行业周度涨跌排行"""
+    """收集申万行业周度涨跌排行（AmazingData 优先，akshare 兜底）"""
+    # AmazingData：31 个申万一级行业指数日线（2000 年至今）
+    try:
+        from src.etf.amazing_factors import get_level1_industries, get_industry_daily
+
+        sectors = []
+        for item in get_level1_industries():
+            df = get_industry_daily(item["code"])
+            if df is None or len(df) < 6:
+                continue
+            close = pd.to_numeric(df["CLOSE"], errors="coerce").dropna()
+            if len(close) < 6:
+                continue
+            week_ret = float((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6] * 100)
+            sectors.append({
+                "name": item["name"],
+                "week_return": f"{week_ret:+.2f}%",
+            })
+        if sectors:
+            sectors.sort(key=lambda x: float(x["week_return"].rstrip("%")), reverse=True)
+            return sectors
+    except Exception as e:
+        logger.warning(f"AmazingData 获取行业板块数据失败，降级 akshare: {e}")
+
     try:
         import akshare as ak
         # 申万行业指数日线行情

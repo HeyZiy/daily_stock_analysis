@@ -59,6 +59,11 @@ class LLMClient:
             import os
             self._api_key = os.getenv("DEEPSEEK_API_KEY", "")
 
+        # 回退：直接用 env 中的 DEEPSEEK_BASE_URL
+        if not self._base_url:
+            import os
+            self._base_url = os.getenv("DEEPSEEK_BASE_URL", "")
+
         # 确保 base_url 以 /v1 结尾
         if self._base_url and not self._base_url.rstrip("/").endswith("/v1"):
             self._base_url = self._base_url.rstrip("/") + "/v1"
