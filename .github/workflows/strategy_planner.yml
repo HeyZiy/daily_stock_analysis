@@ -1,0 +1,111 @@
+name: 策略规划器
+
+on:
+  schedule:
+    # 每周六北京时间 09:00 (UTC 01:00)
+    - cron: '0 1 * * 6'
+  
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: '启用调试模式'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: strategy-planner
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 创建必要目录
+        run: |
+          mkdir -p data logs reports
+
+      - name: 执行策略规划器
+        env:
+          # ── 数据源 ──
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          MX_APIKEY: ${{ secrets.MX_APIKEY }}
+
+          # ── LLM 配置 ──
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || 'deepseek/deepseek-chat' }}
+
+          # 或者使用 LLM_CHANNELS
+          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || '' }}
+
+          # ── 通知渠道 ──
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'Trend Sniper 全天候策略' }}
+
+          # ── 系统配置 ──
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+
+        run: |
+          echo "=========================================="
+          echo "📊 策略规划器 Agent"
+          echo "=========================================="
+          echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          
+          DEBUG_FLAG=""
+          if [ "${{ github.event.inputs.debug }}" = "true" ]; then
+            DEBUG_FLAG="--debug"
+            echo "🐛 调试模式已启用"
+          fi
+          
+          python strategy_planner.py $DEBUG_FLAG
+      
+      - name: 上传分析报告
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: strategy-planner-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 90
+      
+      - name: 上传策略注册表
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: strategy-registry-data-${{ github.run_number }}
+          path: data/strategy_registry.json
+          retention-days: 90
+      
+      - name: 显示运行结果
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+           echo "📊 策略规划完成"
+          echo "=========================================="
+          if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
+            echo "生成的报告:"
+            ls -la reports/
+          else
+            echo "⚠️ 未生成报告文件"
+          fi

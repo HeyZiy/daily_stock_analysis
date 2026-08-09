@@ -1,45 +1,67 @@
-﻿# 📈 How will it come?
+﻿# 📊 Regime Trader — 全天候策略系统
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
- 
+
+一个自进化的全天候量化策略系统：根据市场状态自动规划策略配置，覆盖趋势跟踪、ETF资产配置、行业轮动等多策略。
+
 ---
 
 ## 框架
 
 ```
-                    ┌─────────────────┐
-                    │  市场环境门控      │  ← 共享，每日收盘后运行
-                    │  market_gate.py  │
-                    │  硬拦截 + 4项条件  │
-                    └───────┬─────────┘
-                            │
-            ┌───────────────┼───────────────┐
-            ▼                               ▼
-    ┌───────────────┐               ┌───────────────┐
-    │  ETF 长期配置   │               │  趋势交易策略   │
-    │  主账户(90%)   │               │  子账户(1万)   │
-    │               │               │               │
-    │  gate→偏移→    │               │  gate→系数→    │
-    │  再平衡建议     │               │  买卖信号       │
-    └───────────────┘               └───────────────┘
-            │                               │
-            ▼                               ▼
-    ┌───────────────────────────────────────────────┐
-    │  妙想模拟仓 (mx-moni)                          │
-    │  持仓查询 / 市价买卖 / 资金管理                 │
-    └───────────────────────────────────────────────┘
+                    ┌─────────────────────┐
+                    │    策略规划器          │  ← 每周末运行
+                    │  strategy_planner.py │     市场诊断 + 策略适配
+                    │  LLM 驱动 + 自进化     │     策略权重分配 + 进化
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │   市场环境门控        │  ← 共享，每日收盘后运行
+                    │   market_gate.py     │
+                    │   硬拦截 + 4项条件     │
+                    └──────────┬──────────┘
+                               │
+            ┌──────────────────┼──────────────────┐
+            ▼                                     ▼
+    ┌───────────────┐                     ┌───────────────┐
+    │  ETF 长期配置   │                     │  趋势交易策略   │
+    │  压舱石        │                     │  练手          │
+    │               │                     │               │
+    │  估值门控 →    │                     │  信号检测 →    │
+    │  再平衡执行     │                     │  买卖报告       │
+    └───────────────┘                     └───────────────┘
+            │                                     │
+            ▼                                     ▼
+    ┌─────────────────────────────────────────────────────┐
+    │  妙想模拟仓 (mx-moni)                                │
+    │  持仓查询 / 市价买卖 / 资金管理                       │
+    └─────────────────────────────────────────────────────┘
             │
             ▼
-    ┌───────────────────────────────────────────────┐
-    │  通知渠道                                       │
-    │  飞书 / 钉钉 / Discord / 邮件 / 企业微信        │
-    └───────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────┐
+    │  通知渠道                                             │
+    │  飞书 / 钉钉 / Discord / 邮件 / 企业微信              │
+    └─────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 策略体系
+
+### 策略规划器（自进化）
+
+每周末由 LLM 诊断市场阶段，对策略池中所有策略进行适配度打分和权重分配。LLM 还能主动提议新策略，经审批后加入策略池。
+
+```bash
+python strategy_planner.py              # 市场诊断 + 策略适配 + 进化建议
+python strategy_planner.py --no-llm     # 仅采集数据，跳过 LLM
+python strategy_planner.py --list-strategies  # 查看策略池
+python strategy_planner.py --list-pending    # 查看 LLM 提议的新策略
+python strategy_planner.py --approve ID      # 批准新策略
+```
+
+当前策略池内置 9 个策略：趋势回调买入、ETF PE估值配置、行业轮动、高股息防御、现金管理、网格波段、动量追涨、超跌反弹、黄金商品对冲。策略池持久化在 `data/strategy_registry.json`，随 LLM 提议自动扩展。
 
 ### ETF 长期配置
 
@@ -61,7 +83,7 @@ python etf_allocation.py --execute    # 盘中执行，市价调仓
 
 ### 趋势交易
 
-1 万练手。均线多头 + 缩量回踩 MA5 买点，趋势破坏即卖。不做加速追高，不做情绪高潮接力。
+均线多头 + 缩量回踩 MA5 买点，趋势破坏即卖。不做加速追高，不做情绪高潮接力。
 
 ```bash
 python trend_analysis.py              # 日度分析（含松筛选股）
@@ -80,40 +102,13 @@ python trend_analysis.py --screen-keyword "均线多头"  # 自定义选股
 
 ---
 
-## 模块清单
-
-```
-trend_analysis.py       — 趋势交易策略（松筛选股 + 信号检测 + 报告 + 通知）
-etf_allocation.py       — ETF 长期配置（再平衡分析 + 执行）
-
-src/
-  market_gate.py        — 市场环境门控（硬拦截 + 4 项条件 + 5 级状态）
-  mx_client.py          — 妙想模拟组合 API 客户端
-  etf_config.py         — ETF 中性基准表 + 战术偏移规则
-  etf_rebalancer.py     — ETF 再平衡引擎
-  config.py             — 全局配置管理
-  notification.py       — 多渠道通知服务
-
-data_provider/          — 多源行情数据（akshare/efinance/tushare/baostock）
-
-docs/
-  market.md             — 市场门控设计文档
-  trend_strategy.md     — 趋势交易策略文档
-  etf_allocation.md     — ETF 配置策略文档
-  mx_skills/            — 妙想 Skill API 参考文档
-```
-
----
-
 ## 每日执行时序（GitHub Actions）
 
 ```
 北京时间
-15:00  收盘
-16:00  ① trend_analysis    → 松筛选股补充自选池 + 趋势策略分析 + 买卖信号报告
-16:00  ② etf_allocation    → ETF 再平衡分析（出计划，暂不执行）
-       ─── 次日盘中 ───
- 9:35  ③ etf_allocation --execute → 执行昨日再平衡计划（手动/可选）
+周一~周五 13:30  ① trend_analysis    → 趋势信号检测 + 买卖建议报告
+               ② etf_allocation    → ETF 再平衡分析（出计划）
+周六 09:00      ③ strategy_planner  → 市场诊断 + 策略适配 + 策略进化
 ```
 
 ---
@@ -131,6 +126,7 @@ docs/
 | Secret | 说明 |
 |---|---|
 | `MX_APIKEY` | 妙想 API Key（选股 + 模拟仓交易） |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key（策略规划器 LLM 分析） |
 
 **通知渠道（至少配一个）：**
 
@@ -146,7 +142,7 @@ docs/
 | Secret | 说明 |
 |---|---|
 | `TUSHARE_TOKEN` | Tushare 数据源 |
-| `SMART_SCREEN_KEYWORD` | 选股条件（留空则每次手动指定） |
+| `SMART_SCREEN_KEYWORD` | 趋势选股条件 |
 
 ### 3. 启用 Actions
 
@@ -164,7 +160,12 @@ pip install -r requirements.txt
 
 # 配置 .env
 cp .env.example .env
-# 填入 MX_APIKEY 和通知渠道
+# 填入 MX_APIKEY、DEEPSEEK_API_KEY 和通知渠道
+
+# === 策略规划器 ===
+python strategy_planner.py                    # 市场诊断 + 策略适配
+python strategy_planner.py --no-llm           # 只看采集的数据
+python strategy_planner.py --list-strategies  # 查看策略池
 
 # === 趋势交易策略 ===
 python trend_analysis.py                    # 完整分析（含松筛选股）
@@ -191,7 +192,7 @@ python etf_allocation.py --execute          # 盘中执行调仓
 | 指数暴跌 | 上证跌 > 3% |
 | 成交量骤降 | 当日 < 20 日均量 × 0.5 |
 
-**4 项门控：**
+**4 项门控（≥2 项通过才开仓，trending_down 需 ≥3 项）：**
 
 | # | 条件 | 类型 |
 |---|---|---|
@@ -199,8 +200,6 @@ python etf_allocation.py --execute          # 盘中执行调仓
 | ②a | 两市成交额 ≥ 1.5 万亿 | 量能 |
 | ②b | 成交量 > 近 20 日均量 | 量能 |
 | ③ | 涨停 ≥ 30 且 > 跌停 × 1.5 | 情绪 |
-
-≥2 项通过 → 开仓。通过后按 5 级市场状态（trending_up / weak_up / sideways / trending_down / chaos）决定评分系数和持仓策略。
 
 ---
 
@@ -210,14 +209,15 @@ python etf_allocation.py --execute          # 盘中执行调仓
 # 妙想 API（必填）
 MX_APIKEY=your_mx_apikey
 
+# LLM（策略规划器必填）
+DEEPSEEK_API_KEY=your_deepseek_key
+# 或 LLM_CHANNELS=deepseek 配合 LLM_DEEPSEEK_API_KEY
+
 # 选股条件
 SMART_SCREEN_KEYWORD=均线多头排列，涨幅2%-7%，换手率超过5%
 
 # 通知（至少一个）
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-# EMAIL_SENDER=sender@example.com
-# EMAIL_PASSWORD=...
-# EMAIL_RECEIVERS=receiver@example.com
 ```
 
 ---
