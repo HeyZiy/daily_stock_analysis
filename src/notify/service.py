@@ -15,6 +15,7 @@ A股自选股智能分析系统 - 通知层
    - Pushover（手机/桌面推送）
 """
 import logging
+import requests
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
@@ -119,16 +120,24 @@ class NotificationService(EmailSender):
     def _detect_all_channels(self) -> List[NotificationChannel]:
         """
         检测所有已配置的渠道
-        
+
         Returns:
             已配置的渠道列表
         """
         channels = []
-        
+
         # 邮件
         if self._is_email_configured():
             channels.append(NotificationChannel.EMAIL)
-        
+
+        # 飞书群机器人 Webhook（FEISHU_WEBHOOK_URL）
+        try:
+            cfg = get_config()
+            if getattr(cfg, 'feishu_webhook_url', None):
+                channels.append(NotificationChannel.FEISHU)
+        except Exception:
+            pass
+
         return channels
 
     def is_available(self) -> bool:
@@ -201,6 +210,8 @@ class NotificationService(EmailSender):
                         )
                     else:
                         result = self.send_to_email(content, receivers=receivers)
+                elif channel == NotificationChannel.FEISHU:
+                    result = self._send_feishu(content)
                 else:
                     logger.warning(f"不支持的通知渠道: {channel}")
                     result = False
@@ -217,6 +228,51 @@ class NotificationService(EmailSender):
         logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
         return success_count > 0
    
+    def _send_feishu(self, content: str) -> bool:
+        """
+        通过飞书群机器人 Webhook 推送 Markdown 报告。
+
+        飞书自定义机器人 Webhook 仅原生支持 text/post 等消息类型（不直接渲染 Markdown），
+        故先用 format_feishu_markdown 转换为飞书友好的纯文本，再按字节分片发送以避开长度限制。
+        注意：机器人安全设置请选「无需」或「自定义关键词」，勿选「签名校验」（本方法不计算签名）。
+        """
+        from src.notify.formatters import format_feishu_markdown
+
+        try:
+            cfg = get_config()
+            url = getattr(cfg, 'feishu_webhook_url', None)
+            if not url:
+                logger.warning("飞书 Webhook 未配置（FEISHU_WEBHOOK_URL 为空），跳过推送")
+                return False
+
+            text = format_feishu_markdown(content)
+            max_bytes = int(getattr(cfg, 'feishu_max_bytes', 20000) or 20000)
+            raw = text.encode('utf-8')
+            chunks = [
+                raw[i:i + max_bytes].decode('utf-8', errors='ignore')
+                for i in range(0, len(raw), max_bytes)
+            ] or [text]
+
+            ok = True
+            for idx, chunk in enumerate(chunks, 1):
+                payload = {"msg_type": "text", "content": {"text": chunk}}
+                try:
+                    resp = requests.post(url, json=payload, timeout=15)
+                    data = resp.json()
+                except Exception as e:
+                    logger.error(f"飞书推送请求失败({idx}/{len(chunks)}): {e}")
+                    ok = False
+                    continue
+                if data.get("code", 0) != 0:
+                    logger.error(f"飞书推送失败({idx}/{len(chunks)}): {data}")
+                    ok = False
+                else:
+                    logger.info(f"飞书推送成功({idx}/{len(chunks)})")
+            return ok
+        except Exception as e:
+            logger.error(f"飞书推送异常: {e}")
+            return False
+
     def save_report_to_file(
         self, 
         content: str, 

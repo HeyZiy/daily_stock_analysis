@@ -1,8 +1,10 @@
 name: ETF 周度观察
 
+# 已禁用：依赖 AmazingData（TGW 凭证 + wheel 本地安装），CI 环境无法运行。
+# 如需恢复：移除 on 块注释即可。
 on:
-  schedule:
-    - cron: '0 1 * * 6'     # 每周六 UTC 01:00 = 北京时间 09:00
+  # schedule:
+  #   - cron: '0 1 * * 6'     # 每周六 UTC 01:00 = 北京时间 09:00
 
   workflow_dispatch:
 
