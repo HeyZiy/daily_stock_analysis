@@ -1,0 +1,46 @@
+# -*- coding: utf-8 -*-
+"""
+===================================
+ETF 周度自动调仓 — 定时任务配置
+===================================
+
+执行内容：每周一 9:35 自动运行 ETF 周度观察并执行调仓（--execute）。
+说明：
+- 9:35 在开盘（9:30）后，妙想市价单可正常成交。
+- 非交易日（节假日周一）由脚本内部 is_trading_day() 自动跳过。
+- 只出建议用 dry-run（不带 --execute），自动执行才带 --execute。
+"""
+
+# ─────────────────────────────────────────────
+# 方式一：Linux 云服务器 crontab（如未来迁移到服务器）
+# 每周一 9:35（北京时间）。服务器时区需为 Asia/Shanghai。
+#   crontab -e
+#     35 9 * * 1  cd /path/to/regime-trader && ./.conda/python.exe etf_observe.py --execute >> logs/etf_cron.log 2>&1
+#
+# 说明：crontab 用 flock 防重入（可选）：
+#     35 9 * * 1  cd /path/to/regime-trader && flock -n /tmp/etf.lock ./.conda/python.exe etf_observe.py --execute >> logs/etf_cron.log 2>&1
+# ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# 方式二：Windows 任务计划程序（当前本地环境）
+# 用管理员 PowerShell 注册每周一 9:35 任务（只给配置，不自动执行）：
+#
+#   $action = New-ScheduledTaskAction -Execute "D:\App\Conda\python.exe" `
+#     -Argument "D:\Documents\PythonProject\regime-trader\etf_observe.py --execute --no-notify" `
+#     -WorkingDirectory "D:\Documents\PythonProject\regime-trader"
+#   $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 09:35
+#   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
+#   Register-ScheduledTask -TaskName "ETFAutoRebalance" -Action $action -Trigger $trigger -Settings $settings -Force
+#
+# 查看/删除：
+#   Get-ScheduledTask -TaskName "ETFAutoRebalance"
+#   Unregister-ScheduledTask -TaskName "ETFAutoRebalance"
+# ─────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# 方式三：Windows 内置 cron 替代（schtasks，无需管理员）
+#   schtasks /Create /TN "ETFAutoRebalance" /TR "\"D:\App\Conda\python.exe\" \"D:\Documents\PythonProject\regime-trader\etf_observe.py\" --execute --no-notify" /SC WEEKLY /D MON /ST 09:35 /F
+#
+# 删除：
+#   schtasks /Delete /TN "ETFAutoRebalance" /F
+# ─────────────────────────────────────────────

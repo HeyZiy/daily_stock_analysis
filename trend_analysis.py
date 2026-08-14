@@ -67,25 +67,10 @@ class SimpleTechnicalAnalyzer:
         self.fetcher = DataFetcherManager()
         self.mx_service = MXService()
         self.trend_analyzer = StockTrendAnalyzer()  # 复用 main.py 的技术指标计算
-        self._trading_dates_cache = None
     
     def get_trading_dates(self, start_date: date, end_date: date) -> List[date]:
-        if self._trading_dates_cache is not None:
-            return [d for d in self._trading_dates_cache if start_date <= d <= end_date]
-        
-        try:
-            import akshare as ak
-            cal_df = ak.tool_trade_date_hist_sina()
-            trading_dates = []
-            for _, row in cal_df.iterrows():
-                trade_date = pd.to_datetime(row['trade_date']).date()
-                if start_date <= trade_date <= end_date:
-                    trading_dates.append(trade_date)
-            self._trading_dates_cache = trading_dates
-            return trading_dates
-        except Exception as e:
-            logger.error(f"严重错误：获取交易日历失败！无法进行后续精确计算。错误信息: {e}")
-            raise RuntimeError("交易日历获取失败。")
+        from src.trading_calendar import get_trading_dates as _get_trading_dates
+        return _get_trading_dates(start_date, end_date)
 
     def get_stocks_pct_change(self, stock_list: List[Tuple[str, str]]) -> Dict[str, float]:
         """
