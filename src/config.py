@@ -476,19 +476,6 @@ class Config:
     # 实时行情预取（Issue #455）：设为 false 可禁用，避免 efinance/akshare_em 全市场拉取
     prefetch_realtime_quotes: bool = True
 
-    # === 数据库配置 ===
-    database_path: str = "./data/stock_analysis.db"
-
-    # 是否保存分析上下文快照（用于历史回溯）
-    save_context_snapshot: bool = True
-
-    # === 回测配置 ===
-    backtest_enabled: bool = True
-    backtest_eval_window_days: int = 10
-    backtest_min_age_days: int = 14
-    backtest_engine_version: str = "v1"
-    backtest_neutral_band_pct: float = 2.0
-    
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
     log_level: str = "INFO"  # 日志级别
@@ -932,13 +919,6 @@ class Config:
             markdown_to_image_max_chars=int(os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS', '15000')),
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
-            database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
-            save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
-            backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
-            backtest_eval_window_days=int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS', '10')),
-            backtest_min_age_days=int(os.getenv('BACKTEST_MIN_AGE_DAYS', '14')),
-            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1'),
-            backtest_neutral_band_pct=float(os.getenv('BACKTEST_NEUTRAL_BAND_PCT', '2.0')),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
             max_workers=int(os.getenv('MAX_WORKERS', '3')),
@@ -1497,16 +1477,6 @@ class Config:
             List of message strings, one per ConfigIssue.
         """
         return [issue.message for issue in self.validate_structured()]
-    
-    def get_db_url(self) -> str:
-        """
-        获取 SQLAlchemy 数据库连接 URL
-        
-        自动创建数据库目录（如果不存在）
-        """
-        db_path = Path(self.database_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{db_path.absolute()}"
 
 
 # === 便捷的配置访问函数 ===

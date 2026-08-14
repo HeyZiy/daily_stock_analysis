@@ -43,7 +43,6 @@ class RelativePathFormatter(logging.Formatter):
 # 默认需要降低日志级别的第三方库
 DEFAULT_QUIET_LOGGERS = [
     'urllib3',
-    'sqlalchemy',
     'google',
     'httpx',
 ]
