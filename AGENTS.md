@@ -48,14 +48,14 @@ No test suite, no lint/typecheck commands.
 - `Config` is a singleton dataclass accessed via `Config.get_instance()`
 - LLM 需要 `DEEPSEEK_API_KEY` 或 `LLM_CHANNELS`
 
-## CI
+## 部署与定时任务
 
-- GitHub Actions, Python 3.11 on `ubuntu-latest`
-- `trend_analysis.yml` runs weekdays at 13:30 Beijing time (UTC 05:30)
-- `etf_weekly.yml` runs Saturdays at 09:00 Beijing time (UTC 01:00)
-- `strategy_planner.yml` runs Saturdays at 09:00 Beijing time (UTC 01:00)
-- Auto-tag on `main` push commits containing `#patch`, `#minor`, or `#major`
-- Release auto-created on `v*.*.*` annotated tag push
+- 已从 GitHub Actions 迁移到云服务器（Linux），Python 环境用项目内 `.conda/`（本地）或 `.venv/`（服务器）
+- 定时任务：`deploy/crontab.server`（crontab 格式，服务器时区须为 Asia/Shanghai）
+  - `trend_analysis.py` — 每交易日 13:30 盘后
+  - `etf_observe.py --execute` — 每周一 9:35（自动调仓，妙想市价单需开盘后）
+  - `strategy_planner.py` — 每周六 9:00
+- 每个任务用 `flock` 防重入；节假日由 `src/trading_calendar.py:is_trading_day()` 处理（etf 任务）或 cron 的 `1-5` 限定（trend 任务）
 
 ## Design Decisions
 
