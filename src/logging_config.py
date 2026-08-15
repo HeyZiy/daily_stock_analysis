@@ -11,6 +11,7 @@
 """
 
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -53,6 +54,7 @@ def setup_logging(
     console_level: Optional[int] = None,
     debug: bool = False,
     extra_quiet_loggers: Optional[List[str]] = None,
+    alert_level: Optional[str] = None,
 ) -> None:
     """
     统一的日志系统初始化
@@ -62,12 +64,17 @@ def setup_logging(
     2. 常规日志文件：INFO 级别，10MB 轮转，保留 5 个备份
     3. 调试日志文件：DEBUG 级别，50MB 轮转，保留 3 个备份
 
+    另可启用日志告警：WARNING 及以上日志推送至通知渠道（去重 + 限流）。
+    通过环境变量 LOG_ALERT_LEVEL 控制级别，默认 "WARNING"；设为 OFF 禁用。
+
     Args:
         log_prefix: 日志文件名前缀（如 "api_server" -> api_server.log）
         log_dir: 日志文件目录，默认 ./logs
         console_level: 控制台日志级别（可选，优先于 debug 参数）
         debug: 是否启用调试模式（控制台输出 DEBUG 级别）
         extra_quiet_loggers: 额外需要降低日志级别的第三方库列表
+        alert_level: 日志告警级别（None 时读取 LOG_ALERT_LEVEL，默认 WARNING；
+                     "OFF"/"" 禁用）
     """
     # 确定控制台日志级别
     if console_level is not None:
@@ -122,6 +129,20 @@ def setup_logging(
     debug_handler.setLevel(logging.DEBUG)
     debug_handler.setFormatter(rel_formatter)
     root_logger.addHandler(debug_handler)
+
+    # Handler 4: 日志告警（WARNING+ 推送通知渠道，去重 + 限流）
+    resolved_alert = alert_level if alert_level is not None else os.getenv("LOG_ALERT_LEVEL", "WARNING")
+    if resolved_alert and resolved_alert.strip().lower() not in ("off", "none", "0"):
+        try:
+            from src.notify.log_alert import LogAlertHandler
+
+            alert_handler = LogAlertHandler(
+                level=getattr(logging, resolved_alert.strip().upper(), logging.WARNING)
+            )
+            alert_handler.setFormatter(rel_formatter)
+            root_logger.addHandler(alert_handler)
+        except Exception:
+            logging.getLogger(__name__).warning("日志告警处理器初始化失败，已跳过", exc_info=True)
 
     # 降低第三方库的日志级别
     quiet_loggers = DEFAULT_QUIET_LOGGERS.copy()

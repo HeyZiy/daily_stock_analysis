@@ -218,6 +218,9 @@ SMART_SCREEN_KEYWORD=市值大于30亿小于500亿；均线多头排列；换手
 
 # 通知（至少一个）
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+
+# 日志告警：WARNING 及以上日志推送到通知渠道（默认 WARNING；设为 OFF 禁用）
+LOG_ALERT_LEVEL=WARNING
 ```
 
 ---
