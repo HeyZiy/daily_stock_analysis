@@ -12,7 +12,6 @@
 
 import logging
 import sys
-from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
@@ -64,7 +63,7 @@ def setup_logging(
     3. 调试日志文件：DEBUG 级别，50MB 轮转，保留 3 个备份
 
     Args:
-        log_prefix: 日志文件名前缀（如 "api_server" -> api_server_20240101.log）
+        log_prefix: 日志文件名前缀（如 "api_server" -> api_server.log）
         log_dir: 日志文件目录，默认 ./logs
         console_level: 控制台日志级别（可选，优先于 debug 参数）
         debug: 是否启用调试模式（控制台输出 DEBUG 级别）
@@ -80,10 +79,9 @@ def setup_logging(
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
-    # 日志文件路径（按日期分文件）
-    today_str = datetime.now().strftime('%Y%m%d')
-    log_file = log_path / f"{log_prefix}_{today_str}.log"
-    debug_log_file = log_path / f"{log_prefix}_debug_{today_str}.log"
+    # 日志文件路径（固定文件名，便于 tail -f 持续跟踪，靠大小轮转）
+    log_file = log_path / f"{log_prefix}.log"
+    debug_log_file = log_path / f"{log_prefix}_debug.log"
 
     # 配置根 logger
     root_logger = logging.getLogger()
