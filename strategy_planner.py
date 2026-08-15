@@ -35,7 +35,44 @@ from src.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 
+def _save_llm_input(data_text: str) -> str:
+    """原样保存 LLM 输入到 reports 目录。"""
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
+    today_str = date.today().strftime("%Y%m%d")
+    input_path = reports_dir / f"strategy_planner_llm_input_{today_str}.md"
+    input_path.write_text(data_text, encoding="utf-8")
+    logger.info(f"LLM 输入已记录: {input_path}")
+    return str(input_path)
+
+
+def _notify_llm_input(data_text: str) -> bool:
+    """将 LLM 输入通过通知渠道发送（供人工核对）。"""
+    try:
+        from src.notify.service import NotificationService
+
+        notify = NotificationService()
+        content = f"# 📥 策略规划 Agent 输入数据\n\n{data_text}"
+        success = notify.send(content)
+        if success:
+            logger.info("LLM 输入通知已发送")
+        else:
+            logger.warning("LLM 输入通知未发送（无可用渠道）")
+        return success
+    except Exception as e:
+        logger.warning(f"LLM 输入通知发送失败: {e}")
+        return False
+
+
 def main():
+    # Windows 控制台 GBK 不认 emoji，强制 UTF-8 输出
+    try:
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="策略规划器 — 根据市场状态规划策略配置")
     parser.add_argument("--debug", action="store_true", help="调试模式")
     parser.add_argument("--no-notify", action="store_true", help="不发送通知")
@@ -97,18 +134,11 @@ def main():
     print(f"{'='*60}\n")
 
     # Step 1: 采集数据
-    print("[1/4] 采集市场市场数据...")
+    print("[1/4] 采集市场数据...")
     from src.strategy_planner.data_collector import collect_all_data, format_data_for_llm
     market_data = collect_all_data()
     data_text = format_data_for_llm(market_data)
     logger.info(f"数据采集完成，已获取 {len(market_data)} 个数据类别")
-
-    # Step 2: 加载策略
-    print("[2/4] 加载策略池...")
-    from src.strategy_planner.strategy_registry import get_all_strategies, format_strategies_for_llm
-    strategies = get_all_strategies()
-    strategies_text = format_strategies_for_llm(strategies)
-    logger.info(f"加载了 {len(strategies)} 个策略")
 
     if args.no_llm:
         print("\n" + "="*60)
@@ -117,9 +147,14 @@ def main():
         print("\n--no-llm 已指定，跳过 LLM 分析。")
         return
 
-    # Step 3: LLM 分析
-    print("[3/4] LLM 市场诊断 + 策略适配 + 策略进化...")
-    from src.strategy_planner.analyzer import run_full_analysis
+    # 原样记录 LLM 输入 + 发送输入通知（在调 LLM 之前）
+    _save_llm_input(data_text)
+    if not args.no_notify:
+        _notify_llm_input(data_text)
+
+    # ── Agent 1: 市场诊断 + 从零提议策略 ──
+    print("[2/4] Agent 1: 市场诊断 + 策略提议...")
+    from src.strategy_planner.analyzer import run_market_diagnosis, run_strategy_proposal
     from src.strategy_planner.llm_client import get_llm_client
 
     client = get_llm_client()
@@ -129,25 +164,51 @@ def main():
         print("   你可以使用 --no-llm 跳过 LLM 分析仅查看数据。")
         sys.exit(1)
 
-    analysis = run_full_analysis(data_text, strategies_text)
+    diagnosis = run_market_diagnosis(data_text)
+    proposal = run_strategy_proposal(data_text, diagnosis)
 
-    # 打印分析摘要
-    diagnosis = analysis.get("诊断", {})
+    # 打印 Agent 1 摘要
     print(f"   市场阶段: {diagnosis.get('phase', 'N/A')}")
     print(f"   风险等级: {diagnosis.get('risk_level', 'N/A')}")
-    strategy_fit = analysis.get("策略适配", {})
-    assessments = strategy_fit.get("strategy_assessments", [])
-    if assessments:
-        top_strategy = max(assessments, key=lambda x: x.get("fit_score", 0))
-        print(f"   最适配策略: {top_strategy.get('strategy_name', 'N/A')} (适配度 {top_strategy.get('fit_score', 0)}/100)")
-    evolution = analysis.get("策略进化", {})
-    new_count = len(evolution.get("suggestions", []))
-    print(f"   新策略提议: {new_count} 个")
+    candidates = proposal.get("candidates", [])
+    recommended = proposal.get("recommended", {})
+    print(f"   候选策略: {len(candidates)} 个")
+    if recommended:
+        print(f"   最推荐策略: {recommended.get('name', 'N/A')}")
+
+    # ── Agent 2: 推荐策略实现检查 ──
+    print("[3/4] Agent 2: 推荐策略实现检查...")
+    from src.strategy_planner.implementation_checker import ensure_strategy_implementation, list_todo_summary
+
+    impl_results = []
+    recommended_name = recommended.get("name", "")
+    for cand in candidates:
+        # 只检查推荐策略 + 高适配候选（fit >= 60）
+        if cand.get("name") == recommended_name or cand.get("fit_score", 0) >= 60:
+            check = ensure_strategy_implementation({
+                "name": cand.get("name", ""),
+                "category": cand.get("category", "其他"),
+                "description": cand.get("description", ""),
+                "why_now": cand.get("reason", ""),
+                "market_phase": diagnosis.get("phase", ""),
+            })
+            impl_results.append({"strategy": cand.get("name", ""), **check})
+            if check["implemented"]:
+                status = "✅ 已有实现"
+            elif check["added_to_todo"]:
+                status = "📋 已加入待办" + ("（文档已定义，缺实现）" if check.get("documented") else "")
+            else:
+                status = "⚪ 跳过"
+            print(f"   {status}: {cand.get('name', '')}")
 
     # Step 4: 生成报告
     print("[4/4] 生成市场报告...")
     from src.strategy_planner.report import generate_report
-    report = generate_report(analysis, data_text)
+    report = generate_report(
+        {"诊断": diagnosis, "策略提议": proposal, "实现检查": impl_results, "时间": today_str},
+        data_text,
+        todo_summary=list_todo_summary(),
+    )
 
     # 保存报告
     reports_dir = Path("reports")

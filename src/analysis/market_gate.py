@@ -270,13 +270,11 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
     regime = _detect_regime(index_df if index_df is not None else None, met_count)
 
     if regime == "trending_down":
-        # 均线空头下提高门槛：需满足 3/4 而非 2/4
-        can_trade = met_count >= 3
-        if can_trade:
-            details.append(f"⚠ 均线空头排列，但门控满足{met_count}/4项（≥3/4），谨慎放行")
-            logger.info(f"⚠ 均线空头但门控充足（{met_count}/4），允许开仓")
-        else:
-            details.append(f"📉 均线空头排列，门控仅满足{met_count}/4项（需≥3），禁止开仓")
+        # 均线空头时无论门控通过多少项都不开仓：
+        # 空头结构下"高成交+高情绪"组合是下跌中继/放量出货的典型特征，不是反转信号。
+        # 趋势策略坚持"底部偏右进场"，等收盘重回 MA20（weak_up/trending_up）再参与。
+        can_trade = False
+        details.append("📉 均线空头排列，无论门控通过多少项均禁止开仓（等收盘重回MA20）")
     else:
         can_trade = met_count >= 2
 

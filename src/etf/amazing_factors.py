@@ -151,6 +151,18 @@ def get_industry_daily(code: str) -> Optional[pd.DataFrame]:
 
 # ── 因子计算 ──
 
+def _series_percentile(series: pd.Series, lookback: int) -> Optional[Tuple[float, float]]:
+    """序列近 lookback 期的当前值与历史分位。数据不足或当前值 <= 0 时返回 None。"""
+    recent = pd.to_numeric(series, errors="coerce").dropna().tail(lookback)
+    if len(recent) < 250:
+        return None
+    current = float(recent.iloc[-1])
+    if current <= 0:
+        return None
+    pct = float((recent <= current).mean() * 100)
+    return current, pct
+
+
 def get_industry_pe_percentile(code: str, lookback: int = PERCENTILE_LOOKBACK) -> Optional[dict]:
     """
     行业 PE 历史分位（默认近 5 年）。
@@ -162,15 +174,11 @@ def get_industry_pe_percentile(code: str, lookback: int = PERCENTILE_LOOKBACK) -
     if df is None or "PE" not in df.columns:
         return None
     try:
-        pe_series = pd.to_numeric(df["PE"], errors="coerce").dropna()
-        recent = pe_series.tail(lookback)
-        if len(recent) < 250:
+        result = _series_percentile(df["PE"], lookback)
+        if result is None:
             return None
-        current_pe = float(recent.iloc[-1])
-        if current_pe <= 0:
-            return None
-        pct = float((recent <= current_pe).mean() * 100)
-        return {"pe": round(current_pe, 2), "pe_pct": round(pct, 1)}
+        current, pct = result
+        return {"pe": round(current, 2), "pe_pct": round(pct, 1)}
     except Exception as e:
         logger.warning(f"计算行业 {code} PE 分位失败: {e}")
         return None
@@ -182,15 +190,11 @@ def get_industry_pb_percentile(code: str, lookback: int = PERCENTILE_LOOKBACK) -
     if df is None or "PB" not in df.columns:
         return None
     try:
-        pb_series = pd.to_numeric(df["PB"], errors="coerce").dropna()
-        recent = pb_series.tail(lookback)
-        if len(recent) < 250:
+        result = _series_percentile(df["PB"], lookback)
+        if result is None:
             return None
-        current_pb = float(recent.iloc[-1])
-        if current_pb <= 0:
-            return None
-        pct = float((recent <= current_pb).mean() * 100)
-        return {"pb": round(current_pb, 2), "pb_pct": round(pct, 1)}
+        current, pct = result
+        return {"pb": round(current, 2), "pb_pct": round(pct, 1)}
     except Exception as e:
         logger.warning(f"计算行业 {code} PB 分位失败: {e}")
         return None
@@ -210,18 +214,13 @@ def get_industry_mcap_share(code: str, lookback: int = PERCENTILE_LOOKBACK) -> O
     if df is None or "TOTAL_CAP" not in df.columns:
         return None
     try:
-        cap = pd.to_numeric(df["TOTAL_CAP"], errors="coerce")
-        recent = cap.dropna().tail(lookback)
-        if len(recent) < 250:
-            return None
-
         # 全行业市值需要总盘子，用行业指数当日市值比价口径：
         # 若拿不到全行业汇总，退化为该行业自身市值序列的分位（趋势拥挤度）
-        current_cap = float(recent.iloc[-1])
-        if current_cap <= 0:
+        result = _series_percentile(df["TOTAL_CAP"], lookback)
+        if result is None:
             return None
-        cap_pct = float((recent <= current_cap).mean() * 100)
-        return {"share": round(current_cap, 2), "share_pct": round(cap_pct, 1)}
+        current, pct = result
+        return {"share": round(current, 2), "share_pct": round(pct, 1)}
     except Exception as e:
         logger.warning(f"计算行业 {code} 市值占比失败: {e}")
         return None

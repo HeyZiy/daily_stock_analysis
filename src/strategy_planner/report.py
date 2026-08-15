@@ -4,21 +4,22 @@
 策略规划报告生成器
 ===================================
 
-将分析结果生成为 Markdown 格式的报告。
+将 Agent 1（市场诊断 + 策略提议）与 Agent 2（实现检查）的结果
+生成为 Markdown 格式的报告。
 """
 from datetime import date
 from typing import Dict, List, Any, Optional
 
 
-def generate_report(analysis: Dict[str, Any], data_text: str = "") -> str:
+def generate_report(analysis: Dict[str, Any], data_text: str = "", todo_summary: str = "") -> str:
     """生成 Markdown 报告"""
     today = date.today()
     weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     weekday = weekdays[today.weekday()]
 
     diagnosis = analysis.get("诊断", {})
-    strategy_fit = analysis.get("策略适配", {})
-    evolution = analysis.get("策略进化", {})
+    proposal = analysis.get("策略提议", {})
+    impl_results = analysis.get("实现检查", [])
 
     lines = []
     lines.append(f"# 📊 策略规划报告")
@@ -50,67 +51,106 @@ def generate_report(analysis: Dict[str, Any], data_text: str = "") -> str:
         lines.append(f"> ⚠️ 市场诊断失败: {diagnosis}")
     lines.append("")
 
-    # ── 2. 策略适配 ──
-    lines.append("## 二、策略适配度分析")
+    # ── 2. 候选策略（Agent 1） ──
+    lines.append("## 二、候选策略与适配度（Agent 1）")
     lines.append("")
-    total_allocation = strategy_fit.get("total_allocation", "")
+    total_allocation = proposal.get("total_allocation", "")
     if total_allocation:
         lines.append(f"> **总体建议**: {total_allocation}")
         lines.append("")
 
-    assessments = strategy_fit.get("strategy_assessments", [])
-    if assessments:
-        lines.append("| 策略名称 | 适配度 | 建议权重 | 原因 | 操作指引 |")
-        lines.append("|----------|--------|----------|------|----------|")
-        for a in assessments:
-            fit = a.get("fit_score", 0)
+    candidates = proposal.get("candidates", [])
+    if candidates:
+        lines.append("| 策略名称 | 类别 | 适配度 | 建议权重 | 时间尺度 | 原因 |")
+        lines.append("|----------|------|--------|----------|----------|------|")
+        recommended_name = proposal.get("recommended", {}).get("name", "")
+        for c in candidates:
+            fit = c.get("fit_score", 0)
             emoji = "🟢" if fit >= 70 else ("🟡" if fit >= 40 else "🔴")
+            star = " ⭐" if c.get("name") == recommended_name else ""
             lines.append(
-                f"| {emoji} {a.get('strategy_name', 'N/A')} "
+                f"| {emoji} {c.get('name', 'N/A')}{star} "
+                f"| {c.get('category', '未分类')} "
                 f"| {fit}/100 "
-                f"| {a.get('suggested_weight', 0)}% "
-                f"| {a.get('reason', 'N/A')} "
-                f"| {a.get('operation_guide', 'N/A')} |"
+                f"| {c.get('suggested_weight', 0)}% "
+                f"| {c.get('time_scale', 'N/A')} "
+                f"| {c.get('reason', 'N/A')} |"
             )
 
-    overall_note = strategy_fit.get("overall_note", "")
-    if overall_note:
         lines.append("")
-        lines.append(f"📝 **本周操作备注**: {overall_note}")
+        lines.append("### 详细说明")
+        for i, c in enumerate(candidates, 1):
+            lines.append(f"**{i}. {c.get('name', 'N/A')}**（{c.get('category', '未分类')}）")
+            lines.append(f"- 描述: {c.get('description', 'N/A')}")
+            lines.append(f"- 操作指引: {c.get('operation_guide', 'N/A')}")
+            lines.append("")
+    else:
+        lines.append("> 策略提议失败或未生成候选。")
 
-    key_attention = strategy_fit.get("key_attention", [])
+    # ── 3. 最推荐策略（Agent 1） ──
+    lines.append("## 三、当前最推荐策略")
+    lines.append("")
+    recommended = proposal.get("recommended", {})
+    if recommended and recommended.get("name"):
+        lines.append(f"### ⭐ {recommended.get('name', 'N/A')}")
+        lines.append("")
+        for key, label in [
+            ("why", "为什么推荐"),
+            ("expected_benefit", "预期收益来源"),
+            ("risk_note", "主要风险"),
+        ]:
+            val = recommended.get(key, "")
+            if val:
+                lines.append(f"- **{label}**: {val}")
+    else:
+        lines.append("> 无推荐策略。")
+    lines.append("")
+
+    # ── 4. 实现检查（Agent 2） ──
+    lines.append("## 四、实现检查（Agent 2）")
+    lines.append("")
+    if impl_results:
+        for r in impl_results:
+            name = r.get("strategy", "")
+            if r.get("implemented"):
+                status = "✅ 已有实现"
+            elif r.get("added_to_todo"):
+                status = "📋 已加入待办库"
+                if r.get("documented"):
+                    status += "（策略文档已定义，缺代码实现）"
+                else:
+                    status += "（全新策略）"
+            else:
+                status = "⚪ 跳过"
+            lines.append(f"- **{status}**: {name}")
+            if r.get("evidence"):
+                lines.append(f"  - {r['evidence']}")
+        lines.append("")
+        if todo_summary:
+            lines.append("### 策略待办库")
+            lines.append("")
+            lines.append(todo_summary)
+            lines.append("")
+    else:
+        lines.append("> 未执行实现检查（候选策略为空）。")
+        lines.append("")
+
+    overall_note = proposal.get("overall_note", "")
+    if overall_note:
+        lines.append("---")
+        lines.append("")
+        lines.append(f"📝 **周度操作备注**: {overall_note}")
+        lines.append("")
+
+    key_attention = proposal.get("key_attention", [])
     if key_attention:
         lines.append("")
         lines.append("### 本周重点关注")
         for item in key_attention:
             lines.append(f"- 🔍 {item}")
-    lines.append("")
-
-    # ── 3. 策略进化 ──
-    lines.append("## 三、策略池进化建议")
-    lines.append("")
-    suggestions = evolution.get("suggestions", [])
-    evo_note = evolution.get("evolution_note", "")
-
-    if suggestions:
-        lines.append(f"💡 LLM 提议新增 **{len(suggestions)}** 个策略：")
         lines.append("")
-        for i, s in enumerate(suggestions, 1):
-            lines.append(f"### {i}. {s.get('name', '未命名策略')}（{s.get('category', '未分类')}）")
-            lines.append(f"- **描述**: {s.get('description', 'N/A')}")
-            lines.append(f"- **适配市场**: {', '.join(s.get('suitable_regimes', []))}")
-            lines.append(f"- **为什么现在适合**: {s.get('why_now', 'N/A')}")
-            lines.append(f"- **触发条件**: {s.get('core_conditions', 'N/A')}")
-            lines.append(f"- **风险提示**: {s.get('risk_note', 'N/A')}")
-            lines.append("")
-    else:
-        lines.append("> 本次分析未提议新策略。")
 
-    if evo_note and evo_note not in ["无", "None", ""]:
-        lines.append(f"💬 **改进建议**: {evo_note}")
-    lines.append("")
-
-    # ── 4. 数据附录 ──
+    # ── 5. 数据附录 ──
     lines.append("---")
     lines.append("")
     lines.append("## 附录：本周原始数据")
@@ -119,15 +159,15 @@ def generate_report(analysis: Dict[str, Any], data_text: str = "") -> str:
     return "\n".join(lines)
 
 
-def build_bar_chart(assessments: List[Dict[str, Any]]) -> str:
+def build_bar_chart(candidates: List[Dict[str, Any]]) -> str:
     """根据适配度生成简单的ASCII条形图"""
-    if not assessments:
+    if not candidates:
         return ""
-    max_name_len = max(len(a.get("strategy_name", "")) for a in assessments)
+    max_name_len = max(len(c.get("name", "")) for c in candidates)
     lines = ["```"]
-    for a in assessments:
-        name = a.get("strategy_name", "").ljust(max_name_len)
-        score = a.get("fit_score", 0)
+    for c in candidates:
+        name = c.get("name", "").ljust(max_name_len)
+        score = c.get("fit_score", 0)
         bar = "█" * (score // 5) + "░" * (20 - score // 5)
         emoji = "🟢" if score >= 70 else ("🟡" if score >= 40 else "🔴")
         lines.append(f"{name} {emoji} {score:3d} {bar}")

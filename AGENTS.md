@@ -3,18 +3,16 @@
 ## Architecture
 
 ```
-strategy_planner.py  → 策略规划器：市场诊断 + 策略适配 + 策略自进化
-trend_analysis.py    → 趋势交易策略：松筛选股 + 信号检测 + 门控过滤 + 报告 + 通知
-etf_observe.py       → ETF 周度观察：市场估值概览 + 买入优先级（按 PE 便宜度排序）+ 卖出警示（极端条件）
+strategy_planner.py  → 双 Agent 策略规划器：Agent1 市场诊断+从零提议策略+推荐；Agent2 检查推荐策略是否有实现，无则进待办库
 
-src/strategy_planner/           ← 策略规划器（数据采集 + 策略池 + LLM 分析 + 报告）
+src/strategy_planner/           ← 策略规划器（数据采集 + 双 Agent 分析 + 实现检查 + 报告）
 src/analysis/market_gate.py     ← 共享门控模块（硬拦截 + 4项条件 + 5级状态）
 src/analysis/report.py          ← Markdown 日报生成
 src/analysis/strategy/          ← 信号检测(signal_detector.py)、剔除规则(removal_rules.py)
-src/etf/                        ← ETF 估值门控、配置、板块轮动引擎
+src/etf/                        ← ETF 估值门控、配置、估值因子封装(amazing_factors.py)
 src/notify/                     ← 多渠道通知（飞书/钉钉/Discord/邮件）
 src/mx/                         ← 妙想模拟仓 API 客户端
-data_provider/                  ← 多源行情数据（efinance > akshare > tushare > baostock > yfinance）
+data_provider/                  ← 多源行情数据（AmazingData > efinance > akshare > tushare > baostock > yfinance）
 ```
 
 ## Commands
@@ -61,8 +59,12 @@ No test suite, no lint/typecheck commands.
 
 ## Design Decisions
 
-- `docs/*.md` are maintenance documents, **not authoritative references**. They can fall out of sync. When making decisions about thresholds, trade logic, or signal priority, think from an investment/trading logic perspective — what makes sense for the strategy — not "what did the doc say."
-- 策略池是自进化的：`data/strategy_registry.json` 持久化所有策略，LLM 可提议新策略加入待审批区
+- **文档分工**：
+  - `strategy/*.md` — 项目自身的策略设计文档（门控/趋势/ETF 配置），**必须与代码同步**。改代码中的阈值、交易逻辑、信号优先级时，必须在同一提交里更新对应策略文档；反之改文档时也要同步代码。
+  - `docs/*.md`（含 mx_skills/、星耀数智/）— 外部工具说明书（妙想 API、AmazingData SDK），仅作参考，无需与代码同步。
+- 当文档与代码出现矛盾、或需要决策阈值/逻辑时，**以投资/交易逻辑为准**思考什么对策略合理，而不是"文档说了什么"或"代码现在怎么写的"。
+- 策略池是自进化的：`data/strategy_registry.json` 持久化所有策略，LLM 可提议新策略加入待审批区。
+- 策略待办库：`data/strategy_todo.json` — Agent 2 发现推荐策略无实现时登记，含 doc_ref 指向 strategy/*.md。
 
 ## Key Conventions
 

@@ -72,7 +72,7 @@ python etf_allocation.py              # 盘后分析，出再平衡报告
 python etf_allocation.py --execute    # 盘中执行，市价调仓
 ```
 
-📖 策略文档：[docs/etf_allocation.md](docs/etf_allocation.md)
+📖 策略文档：[strategy/etf_allocation.md](strategy/etf_allocation.md)
 
 | gate 状态 | 动作 | 权益偏移 |
 |---|---|---|
@@ -92,7 +92,7 @@ python trend_analysis.py --list       # 列出自选池
 python trend_analysis.py --screen-keyword "均线多头"  # 自定义选股
 ```
 
-📖 策略文档：[docs/trend_strategy.md](docs/trend_strategy.md)
+📖 策略文档：[strategy/trend_strategy.md](strategy/trend_strategy.md)
 
 | gate 状态 | 系数 | 动作 |
 |---|---|---|
@@ -181,7 +181,7 @@ python etf_allocation.py --execute          # 盘中执行调仓
 
 ## 市场门控
 
-所有策略共享同一套门控逻辑，见 [docs/market.md](docs/market.md)。
+所有策略共享同一套门控逻辑，见 [strategy/market.md](strategy/market.md)。
 
 **硬拦截（触发任一直接锁仓+清仓）：**
 
@@ -213,8 +213,8 @@ MX_APIKEY=your_mx_apikey
 DEEPSEEK_API_KEY=your_deepseek_key
 # 或 LLM_CHANNELS=deepseek 配合 LLM_DEEPSEEK_API_KEY
 
-# 选股条件
-SMART_SCREEN_KEYWORD=均线多头排列，涨幅2%-7%，换手率超过5%
+# 选股条件（松筛）
+SMART_SCREEN_KEYWORD=市值大于30亿小于500亿；均线多头排列；换手率大于3%；不要科创板不要创业板不要北交所不要ST
 
 # 通知（至少一个）
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx

@@ -40,42 +40,45 @@ MARKET_DIAGNOSIS_PROMPT = """你是一个专业的多策略量化投资顾问。
 只输出JSON，不要其他内容。"""
 
 
-STRATEGY_FIT_PROMPT = """你是一个多策略量化投资顾问。当前市场已诊断为：
+STRATEGY_PROPOSAL_PROMPT = """你是一个多策略量化投资顾问。当前市场已诊断为：
 
 **市场阶段**: {phase}
 **风险等级**: {risk_level}
 **趋势分析**: {trend_analysis}
 **关键信号**: {key_signals}
-
-以下是策略池中的全部策略：
-
-{strategies_text}
+**宏观备注**: {macro_note}
 
 ## 任务
-逐策略分析在当前市场环境下的适配度，并给出权重建议。
+从零开始思考：在这种市场环境下，应该采用哪些投资策略？
+**不要受任何既有策略池限制**，基于投资逻辑本身给出候选。
 
-## 分析要求
-对每个策略给出：
-- **适配度**（0-100分）：100=非常适合，0=完全不适合
-- **适配度理由**（30字以内）：为什么适合/不适合当前市场
-- **建议权重**（%）：如果总分100%，这个策略应该占多少
-- **操作指引**：如果该策略有现成实现，应该怎么调参数
-
-所有策略的权重之和必须为100%。
+## 输出要求
+1. 列出 3-5 个在当前市场阶段**实际可用**的候选策略
+2. 每个策略给出适配度（0-100）和理由
+3. 从中选出**当前最推荐的 1 个**，并说明理由
+4. 所有策略可以覆盖不同时间尺度（长期配置 / 中期轮动 / 短期交易）
 
 ## 输出格式（JSON）
 {{
-  "total_allocation": "总体资产配置建议（如：70%仓位运行/30%现金观望）",
-  "strategy_assessments": [
+  "total_allocation": "总体资产配置建议（如：60%仓位运行/40%现金观望）",
+  "candidates": [
     {{
-      "strategy_id": "策略ID",
-      "strategy_name": "策略名称",
+      "name": "策略名称",
+      "category": "趋势跟踪/资产配置/防御策略/震荡策略/反转策略/动量策略/对冲策略/事件驱动/其他",
+      "description": "策略详细描述（50-80字，包含触发条件和退出条件）",
       "fit_score": 85,
-      "reason": "适配原因（30字内）",
+      "reason": "为什么适合当前市场（30字内）",
+      "time_scale": "长期/中期/短期",
       "suggested_weight": 25,
-      "operation_guide": "操作指引（如：扩大筛选范围/降低仓位等）"
+      "operation_guide": "操作指引（30字内）"
     }}
   ],
+  "recommended": {{
+    "name": "最推荐策略名称（必须与 candidates 中一致）",
+    "why": "为什么当前最推荐它（50字内）",
+    "expected_benefit": "预期收益来源（20字内）",
+    "risk_note": "主要风险（30字内）"
+  }},
   "overall_note": "周度整体操作备注（100字以内）",
   "key_attention": ["本周关注点1", "本周关注点2", "本周关注点3"]
 }}
@@ -150,20 +153,20 @@ def run_market_diagnosis(market_data_text: str) -> Dict[str, Any]:
         return {"phase": "无法判断", "short_summary": "LLM输出解析失败", "risk_level": "未知", "error": raw[:500]}
 
 
-def run_strategy_fit(market_data_text: str, diagnosis: Dict[str, Any], strategies_text: str) -> Dict[str, Any]:
-    """Phase 2: 策略适配度分析"""
-    logger.info("Phase 2: 开始策略适配度分析...")
-    prompt = STRATEGY_FIT_PROMPT.format(
+def run_strategy_proposal(market_data_text: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
+    """Agent 1 Phase 2: 从零提议候选策略（不加载策略池）"""
+    logger.info("Phase 2: 开始策略提议与适配度分析...")
+    prompt = STRATEGY_PROPOSAL_PROMPT.format(
         phase=diagnosis.get("phase", "未知"),
         risk_level=diagnosis.get("risk_level", "中"),
         trend_analysis=diagnosis.get("trend_analysis", "未知"),
         key_signals=", ".join(diagnosis.get("key_signals", [])),
-        strategies_text=strategies_text,
+        macro_note=diagnosis.get("macro_note", ""),
     )
     raw = _call_llm(prompt, market_data_text, temperature=0.4)
     try:
         result = json.loads(raw)
-        logger.info(f"策略适配分析完成: {len(result.get('strategy_assessments', []))}个策略已评估")
+        logger.info(f"策略提议完成: {len(result.get('candidates', []))}个候选，推荐: {result.get('recommended', {}).get('name', 'N/A')}")
         return result
     except json.JSONDecodeError:
         import re
@@ -173,56 +176,17 @@ def run_strategy_fit(market_data_text: str, diagnosis: Dict[str, Any], strategie
                 return json.loads(match.group())
             except json.JSONDecodeError:
                 pass
-        return {"strategy_assessments": [], "overall_note": "分析失败", "key_attention": []}
+        return {"candidates": [], "recommended": {}, "overall_note": "分析失败", "key_attention": []}
 
 
-def run_strategy_evolution(diagnosis: Dict[str, Any], strategies_text: str) -> Dict[str, Any]:
-    """Phase 3: 策略池进化建议"""
-    logger.info("Phase 3: 开始策略进化分析...")
-    prompt = STRATEGY_EVOLUTION_PROMPT.format(
-        phase_summary=f"{diagnosis.get('phase', '未知')} | 风险{diagnosis.get('risk_level', '中')} | {diagnosis.get('short_summary', '')}",
-        strategies_text=strategies_text,
-    )
-    raw = _call_llm(prompt, "", temperature=0.6)
-    try:
-        result = json.loads(raw)
-        suggestions = result.get("suggestions", [])
-        logger.info(f"策略进化分析完成: {len(suggestions)}个新策略提议")
-        return result
-    except json.JSONDecodeError:
-        import re
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        return {"suggestions": [], "evolution_note": "分析失败"}
-
-
-def run_full_analysis(data_text: str, strategies_text: str) -> Dict[str, Any]:
-    """运行完整的三阶段分析"""
+def run_full_analysis(data_text: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
+    """运行 Agent 1 的两阶段分析（市场诊断 + 策略提议）"""
     result = {
-        "诊断": {},
-        "策略适配": {},
-        "策略进化": {},
+        "诊断": diagnosis,
+        "策略提议": {},
         "时间": date.today().isoformat(),
     }
 
-    # Phase 1
-    result["诊断"] = run_market_diagnosis(data_text)
-
-    # Phase 2
-    result["策略适配"] = run_strategy_fit(data_text, result["诊断"], strategies_text)
-
-    # Phase 3
-    result["策略进化"] = run_strategy_evolution(result["诊断"], strategies_text)
-
-    # 处理进化建议：加入待审批列表
-    suggestions = result["策略进化"].get("suggestions", [])
-    if suggestions:
-        from src.strategy_planner.strategy_registry import add_pending_strategy
-        for s in suggestions:
-            add_pending_strategy(s)
+    result["策略提议"] = run_strategy_proposal(data_text, diagnosis)
 
     return result

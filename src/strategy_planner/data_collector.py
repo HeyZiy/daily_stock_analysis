@@ -124,7 +124,7 @@ def collect_index_performance(lookback_days: int = 30) -> Dict[str, Any]:
 
         result[name] = info
 
-    # 港股
+    # 港股（AmazingData 不支持港股指数，akshare 直连 + 失败标注）
     try:
         import akshare as ak
         hsi = ak.stock_hk_index_daily_em(symbol="HSI")
@@ -139,10 +139,13 @@ def collect_index_performance(lookback_days: int = 30) -> Dict[str, Any]:
                     "月": f"{float((close[-1] - close[-21]) / close[-21] * 100) if len(close) >= 21 else 0:.2f}%",
                 },
             }
+        else:
+            result["恒生指数"] = {"error": "数据不可用"}
     except Exception as e:
         logger.warning(f"获取恒生指数失败: {e}")
+        result["恒生指数"] = {"error": "数据不可用"}
 
-    # 美股
+    # 美股（yfinance，失败标注）
     try:
         import yfinance as yf
         for name, ticker in [("标普500", "^GSPC"), ("纳斯达克", "^IXIC")]:
@@ -156,15 +159,29 @@ def collect_index_performance(lookback_days: int = 30) -> Dict[str, Any]:
                         "月": f"{float((close[-1] - close[-21]) / close[-21] * 100) if len(close) >= 21 else 0:.2f}%",
                     },
                 }
+            else:
+                result[name] = {"error": "数据不可用"}
     except Exception as e:
         logger.warning(f"获取美股指数失败: {e}")
+        for name in ["标普500", "纳斯达克"]:
+            if name not in result:
+                result[name] = {"error": "数据不可用"}
 
     return result
 
 
+def _tail_percentile(series: pd.Series, lookback: int = 1250) -> Optional[tuple]:
+    """序列近 lookback 期的（当前值, 历史分位%）。数据不足返回 None。"""
+    recent = pd.to_numeric(series, errors="coerce").dropna().tail(lookback)
+    if len(recent) < 250:
+        return None
+    current = float(recent.iloc[-1])
+    return current, float((recent <= current).mean() * 100)
+
+
 def collect_sector_performance() -> List[Dict[str, Any]]:
-    """收集申万行业周度涨跌排行（AmazingData 优先，akshare 兜底）"""
-    # AmazingData：31 个申万一级行业指数日线（2000 年至今）
+    """收集申万行业周度涨跌排行 + 估值分位（AmazingData 优先，akshare 兜底）"""
+    # AmazingData：31 个申万一级行业指数日线（含 PE/PB/市值，2000 年至今）
     try:
         from src.etf.amazing_factors import get_level1_industries, get_industry_daily
 
@@ -177,10 +194,28 @@ def collect_sector_performance() -> List[Dict[str, Any]]:
             if len(close) < 6:
                 continue
             week_ret = float((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6] * 100)
-            sectors.append({
+
+            entry = {
                 "name": item["name"],
                 "week_return": f"{week_ret:+.2f}%",
-            })
+            }
+
+            # 估值维度：PE 分位（近5年）与市值拥挤度
+            try:
+                current_pe, pe_pct = _tail_percentile(df["PE"])
+                if current_pe > 0:
+                    entry["pe_pct"] = f"{pe_pct:.0f}%"
+                    entry["pe"] = f"{current_pe:.1f}"
+            except Exception:
+                pass
+
+            try:
+                _, cap_pct = _tail_percentile(df["TOTAL_CAP"])
+                entry["cap_pct"] = f"{cap_pct:.0f}%"
+            except Exception:
+                pass
+
+            sectors.append(entry)
         if sectors:
             sectors.sort(key=lambda x: float(x["week_return"].rstrip("%")), reverse=True)
             return sectors
@@ -222,41 +257,57 @@ def collect_macro_factors() -> Dict[str, Any]:
     """收集宏观因子"""
     factors = {}
 
-    # 国债收益率
+    # 国债收益率（AmazingData 优先，akshare 兜底）
     try:
-        import akshare as ak
-        bond_df = ak.bond_china_yield(start_date=(date.today() - timedelta(days=10)).strftime("%Y-%m-%d"))
-        if bond_df is not None and not bond_df.empty:
-            latest = bond_df.iloc[-1]
-            factors["十年期国债收益率"] = f"{float(latest.get('中国国债收益率10年', 0)):.4f}%"
-    except Exception:
-        factors["十年期国债收益率"] = "获取失败"
+        from src.etf.amazing_factors import get_treasury_yield_y10
 
-    # 北向资金
-    try:
-        import akshare as ak
-        north = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-        if north is not None and not north.empty:
-            north = north.sort_values("date").reset_index(drop=True)
-            recent = north.tail(5)
-            weekly_flow = float(recent["value"].sum())
-            factors["北向资金近5日净流入"] = f"{weekly_flow:.2f}亿元" if abs(weekly_flow) < 10000 else f"{weekly_flow/1e8:.2f}万亿元"
-    except Exception:
-        factors["北向资金近5日净流入"] = "获取失败"
-
-    # 两融余额
-    try:
-        import akshare as ak
-        margin = ak.stock_margin_detail_sse(date=date.today().strftime("%Y%m%d"))
-        if margin is not None and not margin.empty:
-            total = margin["margin_balance"].sum()
-            factors["两融余额"] = f"{total/1e8:.0f}亿"
+        y10 = get_treasury_yield_y10()
+        if y10 and y10 > 0:
+            factors["十年期国债收益率"] = f"{y10:.4f}%"
+        else:
+            raise ValueError("AmazingData 未返回有效收益率")
     except Exception:
         try:
-            margin = ak.stock_margin_sz_date = date.today().strftime("%Y-%m-%d")
-            df = ak.stock_margin_detail_sz(date=date.today().strftime("%Y-%m-%d"))
-            if df is not None and not df.empty:
-                factors["两融余额"] = f"{float(df['rzrqye'].sum())/1e8:.0f}亿"
+            import akshare as ak
+            bond_df = ak.bond_china_yield(start_date=(date.today() - timedelta(days=10)).strftime("%Y-%m-%d"))
+            if bond_df is not None and not bond_df.empty:
+                latest = bond_df.iloc[-1]
+                factors["十年期国债收益率"] = f"{float(latest.get('中国国债收益率10年', 0)):.4f}%"
+            else:
+                factors["十年期国债收益率"] = "获取失败"
+        except Exception:
+            factors["十年期国债收益率"] = "获取失败"
+
+    # 两融余额（AmazingData 优先，akshare 兜底）
+    try:
+        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+
+        info = AmazingDataFetcher.get_info_data()
+        margin = info.get_margin_summary(is_local=False)
+        if margin is not None and not margin.empty:
+            # 各交易所更新日期不同步：按交易所分别取各自最新日，再汇总沪深两所
+            if "TRADE_DATE" in margin.columns and "EXCHANGE" in margin.columns:
+                margin = margin[margin["EXCHANGE"].isin(["SSE", "SZSE"])]
+                if not margin.empty:
+                    margin = (
+                        margin.sort_values("TRADE_DATE")
+                        .groupby("EXCHANGE", as_index=False)
+                        .tail(1)
+                    )
+            total = float(margin["SUM_BORROW_MONEY_BALANCE"].sum())
+            factors["两融余额"] = f"{total/1e8:.0f}亿"
+        else:
+            raise ValueError("AmazingData 未返回两融数据")
+    except Exception as e:
+        logger.debug(f"AmazingData 获取两融余额失败，降级 akshare: {e}")
+        try:
+            import akshare as ak
+            margin = ak.stock_margin_detail_sse(date=date.today().strftime("%Y%m%d"))
+            if margin is not None and not margin.empty:
+                total = margin["margin_balance"].sum()
+                factors["两融余额"] = f"{total/1e8:.0f}亿"
+            else:
+                factors["两融余额"] = "获取失败"
         except Exception:
             factors["两融余额"] = "获取失败"
 
@@ -264,10 +315,10 @@ def collect_macro_factors() -> Dict[str, Any]:
 
 
 def collect_market_sentiment() -> Dict[str, Any]:
-    """收集市场情绪指标"""
+    """收集市场情绪指标（当日快照 + 近5日序列）"""
     sentiment = {}
 
-    # 成交量/成交额变化
+    # 两市成交额（当日）
     try:
         from data_provider.base import DataFetcherManager
         fm = DataFetcherManager()
@@ -277,20 +328,119 @@ def collect_market_sentiment() -> Dict[str, Any]:
     except Exception:
         sentiment["两市成交额"] = "获取失败"
 
-    # 涨停家数
+    # 上证成交额近5日序列（用上证指数日线 amount 作趋势代理）
+    try:
+        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+        from AmazingData.utils.constant import Period
+
+        AmazingDataFetcher.ensure_login()
+        kline = AmazingDataFetcher._market_data.query_kline(
+            ["000001.SH"],
+            begin_date=int((date.today() - timedelta(days=30)).strftime("%Y%m%d")),
+            end_date=int(date.today().strftime("%Y%m%d")),
+            period=Period.day.value,
+        )
+        df = kline.get("000001.SH")
+        if df is not None and not df.empty:
+            df = df.sort_values("kline_time").tail(5)
+            amt_series = (pd.to_numeric(df["amount"], errors="coerce") / 1e8).round(0).astype(int)
+            sentiment["上证成交额近5日(亿)"] = " → ".join(map(str, amt_series.tolist()))
+    except Exception as e:
+        logger.debug(f"获取上证成交额序列失败: {e}")
+
+    # 涨停/跌停家数（当日 + 近5日序列）
     try:
         import akshare as ak
-        today_str = date.today().strftime("%Y%m%d")
-        zt_df = ak.stock_zt_pool_em(date=today_str)
-        if zt_df is not None and not zt_df.empty:
-            sentiment["涨停家数"] = str(len(zt_df))
-        dt_df = ak.stock_zt_pool_dtgc_em(date=today_str)
-        if dt_df is not None:
-            sentiment["跌停家数"] = str(len(dt_df))
+        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+
+        # 用交易日历取最近 5 个交易日
+        trade_dates = []
+        try:
+            AmazingDataFetcher.ensure_login()
+            cal = AmazingDataFetcher._calendar
+            if cal:
+                trade_dates = [str(d) for d in cal[-5:]]
+        except Exception:
+            pass
+        if not trade_dates:
+            trade_dates = [date.today().strftime("%Y%m%d")]
+
+        zt_series, dt_series = [], []
+        for d in trade_dates:
+            try:
+                zt_df = ak.stock_zt_pool_em(date=d)
+                zt_series.append(len(zt_df) if zt_df is not None else 0)
+            except Exception:
+                zt_series.append(-1)
+            try:
+                dt_df = ak.stock_zt_pool_dtgc_em(date=d)
+                dt_series.append(len(dt_df) if dt_df is not None else 0)
+            except Exception:
+                dt_series.append(-1)
+
+        if zt_series and zt_series[-1] >= 0:
+            sentiment["涨停家数"] = str(zt_series[-1])
+        if dt_series and dt_series[-1] >= 0:
+            sentiment["跌停家数"] = str(dt_series[-1])
+        if len(zt_series) >= 3:
+            sentiment["涨停家数近5日"] = " → ".join(str(v) if v >= 0 else "N/A" for v in zt_series)
+        if len(dt_series) >= 3:
+            sentiment["跌停家数近5日"] = " → ".join(str(v) if v >= 0 else "N/A" for v in dt_series)
     except Exception:
-        sentiment["涨停家数"] = "获取失败"
+        if "涨停家数" not in sentiment:
+            sentiment["涨停家数"] = "获取失败"
 
     return sentiment
+
+
+def collect_market_news() -> List[Dict[str, str]]:
+    """收集本周市场重要资讯（妙想金融资讯搜索）"""
+    try:
+        from src.mx.service import MXService
+
+        service = MXService()
+        queries = [
+            "本周A股市场重要新闻",
+            "本周宏观政策 货币政策 财政政策",
+            "本周市场热点板块",
+        ]
+        news_map = {}  # title -> item，跨查询去重
+        for q in queries:
+            try:
+                resp = service.search_news(q)
+                if not resp:
+                    continue
+                items = (
+                    resp.get("data", {})
+                    .get("data", {})
+                    .get("llmSearchResponse", {})
+                    .get("data", [])
+                )
+                for item in items:
+                    title = (item.get("title") or "").strip()
+                    content = (item.get("content") or "").strip()
+                    if not title or not content:
+                        continue
+                    # 只收权威源（L1 级），过滤自媒体/营销号
+                    authority = str(item.get("authorityLevel", ""))
+                    if authority and not authority.startswith("L1"):
+                        continue
+                    if title not in news_map:
+                        news_map[title] = {
+                            "title": title[:80],
+                            "content": content[:200],
+                            "date": str(item.get("date", ""))[:10],
+                            "source": item.get("source", ""),
+                        }
+            except Exception as e:
+                logger.debug(f"资讯查询失败 [{q}]: {e}")
+        news = list(news_map.values())
+        # 按日期倒序，取前 10 条
+        news.sort(key=lambda x: x["date"], reverse=True)
+        return news[:10]
+    except Exception as e:
+        logger.warning(f"收集市场资讯失败: {e}")
+        return []
 
 
 def collect_market_gate_status() -> Dict[str, Any]:
@@ -321,6 +471,7 @@ def collect_all_data() -> Dict[str, Any]:
         "宏观因子": collect_macro_factors(),
         "市场情绪": collect_market_sentiment(),
         "市场门控状态": collect_market_gate_status(),
+        "本周重要资讯": collect_market_news(),
     }
 
     logger.info("数据采集完成")
@@ -346,19 +497,23 @@ def format_data_for_llm(data: Dict[str, Any]) -> str:
             lines.append(f"- **{name}**: 收盘 {info['latest_close']:.0f} | {ret_str}")
             if bias_str:
                 lines.append(f"  均线偏离: {bias_str}")
+        elif isinstance(info, dict) and "error" in info:
+            lines.append(f"- **{name}**: {info['error']}")
     lines.append("")
 
     # 2. 行业板块
-    lines.append("### 二、行业板块周度涨跌排行")
+    lines.append("### 二、行业板块周度涨跌排行（含估值分位）")
     sectors = data.get("行业板块周度排行", [])
     if sectors:
         top5 = sectors[:5]
         bottom5 = sectors[-5:]
         for i, s in enumerate(top5, 1):
-            lines.append(f"- 🟢 TOP{i}: {s['name']} ({s['week_return']})")
+            extra = f" | PE分位: {s['pe_pct']} | 市值分位: {s['cap_pct']}" if "pe_pct" in s else ""
+            lines.append(f"- 🟢 TOP{i}: {s['name']} ({s['week_return']}){extra}")
         lines.append("  ...")
         for i, s in enumerate(bottom5, len(bottom5)):
-            lines.append(f"- 🔴 BOTTOM{i}: {s['name']} ({s['week_return']})")
+            extra = f" | PE分位: {s['pe_pct']} | 市值分位: {s['cap_pct']}" if "pe_pct" in s else ""
+            lines.append(f"- 🔴 BOTTOM{i}: {s['name']} ({s['week_return']}){extra}")
     else:
         lines.append("- 数据不可用")
     lines.append("")
@@ -388,5 +543,17 @@ def format_data_for_llm(data: Dict[str, Any]) -> str:
         lines.append(f"- 硬拦截: {'触发' if gate.get('hard_intercept') else '无'}")
         for cond_name, cond_val in (gate.get("conditions") or {}).items():
             lines.append(f"  - {'✅' if cond_val else '❌'} {cond_name}")
+    lines.append("")
+
+    # 6. 本周重要资讯
+    lines.append("### 六、本周重要资讯")
+    news = data.get("本周重要资讯", [])
+    if news:
+        for n in news:
+            lines.append(f"- [{n['date']}] **{n['title']}**（{n['source']}）")
+            lines.append(f"  {n['content']}")
+    else:
+        lines.append("- 数据不可用")
+    lines.append("")
 
     return "\n".join(lines)
