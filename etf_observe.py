@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-===================================
+==================================
 ETF 周度观察报告 — 估值导向
-===================================
+==================================
 
-定位：每周一次，纯市场观察
+定位：每周一次，默认纯观察；`--execute` 时执行统一调仓批次。
+
+报告结构：
   1. 市场估值概览（全市场 PE + 国债收益率）
   2. 买入优先级（按 PE 分位排序，越便宜越靠前）
-  3. 卖出警示（极端条件触发：全市场 PE>90% + 行业 PE>95% + 拥挤）
+  3. 持仓对照与调仓建议（核心口径）
+  4. 卫星仓 — ETF 火箭（放量突破候选 + 调仓建议）
+  5. 行业轮动观察（动量排名，不交易）
+  6. 自动调仓执行结果（仅 --execute：卫星卖 → 核心卖 → 核心买 → 卫星买）
 
-不执行交易、不对比持仓、不生成买卖指令。
+卖出警示（极端条件触发：全市场 PE>90% + 行业 PE>95% + 拥挤）。
 """
 
 import argparse
@@ -26,7 +31,7 @@ from src.trading_calendar import is_trading_day
 
 setup_env()
 
-from src.etf.config import CORE_BASELINE, SATELLITE_POOL, AssetType
+from src.etf.config import CORE_BASELINE, AssetType
 from src.etf.amazing_factors import (
     get_market_pe, get_treasury_yield_y10,
     rank_buy_priorities, check_sell_warnings,
@@ -81,9 +86,9 @@ def _buy_priority() -> str:
     """买入优先级（按 PE 分位排序，越便宜越靠前）"""
     lines = ["## 二、买入优先级（按估值便宜度排序）", ""]
 
-    # 收集所有权益 ETF（核心 + 卫星，去重）
+    # 收集所有核心仓权益 ETF（去重）
     equity_etfs = {}
-    for a in CORE_BASELINE + SATELLITE_POOL:
+    for a in CORE_BASELINE:
         if a.asset_type == AssetType.EQUITY and a.code not in equity_etfs:
             equity_etfs[a.code] = a
 
@@ -109,7 +114,7 @@ def _buy_priority() -> str:
 def _sell_warning() -> str:
     """卖出警示（极端条件才触发）"""
     equity_etfs = {}
-    for a in CORE_BASELINE + SATELLITE_POOL:
+    for a in CORE_BASELINE:
         if a.asset_type == AssetType.EQUITY and a.code not in equity_etfs:
             equity_etfs[a.code] = a
 
@@ -158,10 +163,29 @@ def _compute_allocation():
     total_assets = balance["total_assets"]
     rebalancer = ETFRebalancer(client)
     target = rebalancer.calculate_target(equity_offset=offset)
+    core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)
+    core_assets = max(total_assets - rotation_mv, 0.0)
     orders, total_deviation = rebalancer.compare(
         target, positions, total_assets, gate_state="", hard_intercept=False,
     )
     _should, reason = rebalancer.should_rebalance(orders, total_deviation, gate_state="")
+
+    # 卫星仓 — ETF 火箭（只出指令，执行统一走 _execute_batch）
+    rocket = None
+    regime, hard_intercept = "chaos", False
+    try:
+        from src.analysis.market_gate import check_market_gate
+
+        _can, _cond, _sum, regime, hard_intercept = check_market_gate()
+    except Exception:
+        logger.warning("市场门控获取失败，卫星仓禁买", exc_info=True)
+    try:
+        from src.etf import rocket_breakout as rocket_mod
+
+        rocket = rocket_mod.analyze_satellite(positions, total_assets, pe_pct,
+                                              hard_intercept, regime, client=client)
+    except Exception:
+        logger.warning("卫星仓分析失败", exc_info=True)
 
     return {
         "client": client,
@@ -171,11 +195,18 @@ def _compute_allocation():
         "pe_pct": pe_pct,
         "current_pe": current_pe,
         "total_assets": total_assets,
+        "core_assets": core_assets,
+        "core_positions": core_positions,
+        "rotation_mv": rotation_mv,
+        "rotation_positions": rotation_positions,
         "rebalancer": rebalancer,
         "target": target,
         "orders": orders,
         "total_deviation": total_deviation,
         "reason": reason,
+        "rocket": rocket,
+        "regime": regime,
+        "hard_intercept": hard_intercept,
     }
 
 
@@ -198,6 +229,9 @@ def _holding_overview(alloc=None) -> str:
     offset = alloc["offset"]
     pe_pct = alloc["pe_pct"]
     total_assets = alloc["total_assets"]
+    core_assets = alloc["core_assets"]
+    rotation_mv = alloc["rotation_mv"]
+    rotation_positions = alloc["rotation_positions"]
     rebalancer = alloc["rebalancer"]
     target = alloc["target"]
     orders = alloc["orders"]
@@ -212,16 +246,19 @@ def _holding_overview(alloc=None) -> str:
     else:
         gate_line = f"**权益偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}%（中性对照）"
 
-    lines.append(f"**总资产**: {total_assets:,.0f} 元 | {gate_line}")
+    assets_line = f"**总资产**: {total_assets:,.0f} 元"
+    if rotation_mv > 0:
+        assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **轮动持仓**: {rotation_mv:,.0f} 元"
+    lines.append(f"{assets_line} | {gate_line}")
     lines.append(f"**再平衡结论**: {reason}")
     lines.append("")
 
-    # 当前持仓占比（仅来自妙想实际持仓）
+    # 当前持仓占比（核心口径：轮动持仓独立预算，不参与核心偏离计算）
     current_map: dict = {}
-    for p in positions:
+    for p in alloc["core_positions"]:
         mv = float(p.get("market_value", 0) or 0)
-        if total_assets > 0:
-            current_map[p.get("code", "")] = mv / total_assets * 100
+        if core_assets > 0:
+            current_map[p.get("code", "")] = mv / core_assets * 100
 
     # 现金实际占比 = 剩余资金（妙想持仓不含现金项）
     held_sum = sum(v for k, v in current_map.items() if k != "CASH")
@@ -242,9 +279,13 @@ def _holding_overview(alloc=None) -> str:
             action = f"{'🟢买' if order.action == 'buy' else '🔴卖'} {order.quantity}股"
         lines.append(f"| {asset.name} | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} |")
 
-    # 基准外持仓提示
+    # 轮动持仓与基准外持仓提示
+    if rotation_positions:
+        lines.append("")
+        lines.append("> 轮动持仓（独立预算，未纳入核心对照）："
+                     + "、".join(f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions))
     baseline_codes = {a.code for a in rebalancer.baseline}
-    extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in positions
+    extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
              if p.get("code") not in baseline_codes]
     if extra:
         lines.append("")
@@ -264,55 +305,132 @@ def _holding_overview(alloc=None) -> str:
     return "\n".join(lines)
 
 
+# ── 卫星仓与轮动观察 ──
+
+def _satellite_overview(rocket: dict) -> str:
+    """卫星仓 — ETF 火箭：信号候选 + 持仓 + 建议"""
+    if not rocket:
+        return ""
+
+    lines = ["## 四、卫星仓 — ETF 火箭", ""]
+    lines.append(f"预算 10% | 最多 2 只 | 当前卫星持仓市值 {rocket['satellite_mv']:,.0f} 元")
+    if rocket["locked"]:
+        lines.append("🔒 PE 分位 ≥60% 或硬拦截，卫星仓锁定（禁买、清仓）")
+    lines.append("")
+
+    lines.append("### 火箭信号候选（放量突破）")
+    lines.append("")
+    cands = sorted([r for r in rocket["results"] if r["breakout"]],
+                   key=lambda x: x["rocket_score"], reverse=True)
+    if not cands:
+        lines.append("无放量突破信号")
+    for r in cands:
+        pe = f"{r['pe_pct']:.0f}%" if r.get("pe_pct") is not None else "—"
+        lines.append(
+            f"- {r['name']}({r['code']}) 评分{r['rocket_score']} 涨幅{r['chg_pct']:+.1f}% "
+            f"量比5日{r['vol_ratio_5']:.1f}/20日{r['vol_ratio_20']:.1f} 行业PE分位{pe}"
+        )
+    lines.append("")
+
+    lines.append("### 持仓与建议")
+    lines.append("")
+    if rocket["sell_notes"]:
+        for n in rocket["sell_notes"]:
+            lines.append(f"- 🔴 卖出：{n}")
+    if rocket["buy_notes"]:
+        for n in rocket["buy_notes"]:
+            lines.append(f"- 🟢 买入：{n}")
+    if not rocket["sell_notes"] and not rocket["buy_notes"]:
+        lines.append("无调仓建议")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _rotation_observe(rocket: dict) -> str:
+    """行业轮动观察：动量排名（只观察，不交易）"""
+    if not rocket:
+        return ""
+    ranked = rocket["ranked"][:6]
+    if not ranked:
+        return ""
+    lines = ["## 五、行业轮动观察（仅排名，不交易）", ""]
+    for i, r in enumerate(ranked, 1):
+        pe = f"PE分位{r['pe_pct']:.0f}%" if r.get("pe_pct") is not None else "PE—"
+        lines.append(
+            f"{i}. {r['name']}({r['code']}) 动量分{r['rot_score']} "
+            f"20日{r['ret_20d']:+.1f}% 5日{r['ret_5d']:+.1f}% {pe}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ── 自动调仓执行 ──
 
-def _execute_rebalance(alloc: dict) -> str:
-    """执行调仓指令（先卖后买，带资金安全校验），返回执行结果摘要"""
+def _execute_batch(alloc: dict) -> str:
+    """执行调仓批次（卫星卖 → 核心卖 → 核心买 → 卫星买，带全批次资金校验）"""
     from src.mx.client import MXMoniClient
+    from src.etf import rocket_breakout as rocket_mod
 
-    rebalancer = alloc["rebalancer"]
-    orders = alloc["orders"]
+    core_orders = alloc["orders"]
+    rocket = alloc.get("rocket")
     total_assets = alloc["total_assets"]
     avail_balance = alloc["balance"].get("avail_balance") or 0
 
-    lines = ["## 四、自动调仓执行结果", ""]
+    sat_sells = list(rocket["sells"]) if rocket else []
+    sat_buys = list(rocket["buy_orders"]) if rocket else []
+    core_sells = [o for o in core_orders if o.action == "sell"]
+    core_buys = [o for o in core_orders if o.action == "buy"]
+    sells = sat_sells + core_sells
+    buys = core_buys + sat_buys
 
-    if not orders:
+    lines = ["## 六、自动调仓执行结果", ""]
+
+    if not sells and not buys:
         lines.append("无调仓指令，本次不执行。")
         return "\n".join(lines)
 
-    sells = [o for o in orders if o.action == "sell"]
-    buys = [o for o in orders if o.action == "buy"]
+    def _qty(o):
+        return getattr(o, "quantity", None) or getattr(o, "shares", 0)
 
-    # 安全校验 1：买入总额不得超过可用资金（先卖后买，卖出到账计入）
+    # 安全校验 1：卖出数量不得超过实际持仓
+    held = {p.get("code", ""): int(p.get("count", 0) or 0) for p in alloc["positions"]}
+    for o in sells:
+        if _qty(o) > held.get(o.code, 0):
+            lines.append(f"❌ 中止执行：{o.name}({o.code}) 卖出 {_qty(o)} 股 > 持仓 {held.get(o.code, 0)} 股")
+            return "\n".join(lines)
+
+    # 安全校验 2：买入总额不得超过可用资金 + 卖出回款
     sell_amount = sum(o.amount for o in sells)
     buy_amount = sum(o.amount for o in buys)
-    usable = avail_balance + sell_amount
-    if buy_amount > usable:
+    if buy_amount > avail_balance + sell_amount:
         lines.append(f"❌ 中止执行：买入总额 {buy_amount:,.0f} 元 > 可用资金 {avail_balance:,.0f} 元 + 卖出回款 {sell_amount:,.0f} 元")
         return "\n".join(lines)
 
-    # 安全校验 2：卖出数量不得超过实际持仓
-    held = {p.get("code", ""): int(p.get("count", 0) or 0) for p in alloc["positions"]}
-    for o in sells:
-        if o.quantity > held.get(o.code, 0):
-            lines.append(f"❌ 中止执行：{o.name}({o.code}) 卖出 {o.quantity} 股 > 持仓 {held.get(o.code, 0)} 股")
+    # 安全校验 3：卫星买入不超 10% 预算
+    if sat_buys:
+        budget = total_assets * rocket_mod.SATELLITE_BUDGET_RATIO
+        sat_buy_total = sum(o.amount for o in sat_buys)
+        sat_sell_total = sum(o.amount for o in sat_sells)
+        if sat_buy_total > budget - rocket["satellite_mv"] + sat_sell_total:
+            lines.append(f"❌ 中止执行：卫星买入 {sat_buy_total:,.0f} 元 超预算上限 {budget:,.0f} 元")
             return "\n".join(lines)
 
     results: List[str] = []
+    client = alloc["client"]
 
-    # 先卖后买（避免现金不足）
+    # 先卖后买（卫星卖 → 核心卖 → 核心买 → 卫星买）
     for order in sells + buys:
-        resp = alloc["client"].trade(
+        qty = _qty(order)
+        resp = client.trade(
             trade_type=order.action,
             stock_code=order.code,
-            quantity=order.quantity,
+            quantity=qty,
             use_market_price=True,
         )
         ok = resp is not None and resp.get("code") in ("0", "200")
         mark = "✅" if ok else "❌"
         msg = (resp or {}).get("message", "未知错误")
-        results.append(f"{mark} {order.action.upper()} {order.name}({order.code}) {order.quantity}股 ≈ {order.amount:,.0f}元 —— {'成功' if ok else f'失败: {msg}'}")
+        results.append(f"{mark} {order.action.upper()} {order.name}({order.code}) {qty}股 ≈ {order.amount:,.0f}元 —— {'成功' if ok else f'失败: {msg}'}")
 
     lines.append(f"**总资产**: {total_assets:,.0f} 元 | **可用资金**: {avail_balance:,.0f} 元")
     lines.append(f"本次执行 {len(sells) + len(buys)} 笔（卖出 {len(sells)}，买入 {len(buys)}）：")
@@ -351,10 +469,15 @@ def _generate_report(execute: bool = False) -> str:
         _market_overview(),
         _buy_priority(),
         holding_section,
+        _satellite_overview(alloc.get("rocket")),
+        _rotation_observe(alloc.get("rocket")),
     ]
 
-    if execute and alloc and alloc["orders"]:
-        sections.append(_execute_rebalance(alloc))
+    rocket = alloc.get("rocket")
+    has_orders = bool(alloc and alloc["orders"])
+    has_sat_orders = bool(rocket and (rocket["sells"] or rocket["buy_orders"]))
+    if execute and alloc and (has_orders or has_sat_orders):
+        sections.append(_execute_batch(alloc))
 
     warn = _sell_warning()
     if warn:

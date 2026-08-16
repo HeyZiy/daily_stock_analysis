@@ -37,7 +37,7 @@ class AssetAllocation:
 
 # ── 中性基准配置 ──
 # 核心仓位：长期持有，gate 驱动战术偏移 + 再平衡
-# 卫星仓池：0 权重预定义，等待板块轮动逻辑触发（暂未实现），不属于中性基准
+# 行业轮动（src/etf/sector_rotation.py）独立于核心仓，动态扫描 ETF_INDUSTRY_MAP，不属于中性基准
 
 CORE_BASELINE: List[AssetAllocation] = [
     # ── A股宽基 ──
@@ -57,9 +57,6 @@ CORE_BASELINE: List[AssetAllocation] = [
     # ── 现金（国债逆回购，自动理财，不买货基） ──
     AssetAllocation("CASH",   "现金/逆回购",              AssetType.CASH,   0.29, 13),
 ]
-
-# 卫星仓可选池（权重为 0，不参与中性基准再平衡。当前为空，轮动暂不激活。）
-SATELLITE_POOL: List[AssetAllocation] = []
 
 # 再平衡模块使用核心仓位
 NEUTRAL_BASELINE = CORE_BASELINE
@@ -90,6 +87,20 @@ MIN_TRADE_DEVIATION = 0.02            # 忽略 < 2% 的碎股偏差
 
 def get_neutral_baseline() -> List[AssetAllocation]:
     return NEUTRAL_BASELINE
+
+
+def get_rotation_universe_codes() -> set:
+    """行业轮动标的代码集（剔除核心基准代码，避免与核心仓资金口径重叠）。
+
+    核心仓再平衡以"核心资金 = 总资产 − 轮动持仓市值"为口径，
+    轮动标的独立预算、独立进出，不参与核心偏离计算。
+    """
+    try:
+        from src.etf.amazing_factors import ETF_INDUSTRY_MAP
+    except Exception:
+        return set()
+    baseline_codes = {a.code for a in CORE_BASELINE}
+    return set(ETF_INDUSTRY_MAP) - baseline_codes
 
 
 def get_equity_total_weight() -> float:

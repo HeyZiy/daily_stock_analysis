@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-板块轮动引擎
+行业轮动引擎
 ===================================
 
-按行业动量排名从卫星仓池中选择标的，独立于核心仓再平衡。
+动态扫描全行业 ETF 清单（ETF_INDUSTRY_MAP），按行业动量排名选标的轮动，
+独立于核心仓再平衡。
 
 得分维度：20日涨跌幅 + 5日涨跌幅 + 均线排列 + 量能确认
 进入规则：连续 2 天排名前 3 → 确认进入
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 STATE_FILE = Path(__file__).parent.parent.parent / "data" / "rotation_state.json"
 
-MAX_BUDGET_RATIO = 0.10   # 卫星仓总仓位上限
+MAX_BUDGET_RATIO = 0.10   # 轮动仓总仓位上限
 TOP_N = 2                  # 选前 N 名
 ENTRY_DAYS = 2             # 连续排名前 3 天数要求
 EXIT_DAYS = 3              # 连续不在前 3 天数触发退出
@@ -199,11 +200,11 @@ def _score_etf(code: str, name: str) -> dict:
     }
 
 
-def score_all_pool(pool) -> List[dict]:
-    """对卫星仓池中所有 ETF 打分并排名"""
+def score_all_etfs(entries: List[dict]) -> List[dict]:
+    """对全行业 ETF 清单中所有标的打分并排名"""
     results = []
-    for asset in pool:
-        res = _score_etf(asset.code, asset.name)
+    for entry in entries:
+        res = _score_etf(entry["code"], entry.get("name", ""))
         results.append(res)
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
@@ -221,14 +222,14 @@ def _decide_rotation(scores: List[dict], held_codes: set, pe_pct: float) -> Tupl
     """
     state = _load_state()
 
-    # PE 高估 → 清仓所有卫星
+    # PE 高估 → 清仓所有轮动持仓
     if pe_pct >= PE_THRESHOLD:
-        logger.info(f"PE 分位 {pe_pct:.0f}% >= {PE_THRESHOLD}%，清仓所有卫星仓")
+        logger.info(f"PE 分位 {pe_pct:.0f}% >= {PE_THRESHOLD}%，清仓所有轮动持仓")
         exit_all = list(held_codes)
         state["active"] = {}
         state["top3_streak"] = {}
         _save_state(state)
-        return [], exit_all, f"PE 分位 {pe_pct:.0f}% 偏高估，卫星仓全部清退"
+        return [], exit_all, f"PE 分位 {pe_pct:.0f}% 偏高估，轮动仓全部清退"
 
     ranked = [s["code"] for s in scores if s["score"] > 0 and not s.get("error")]
     top3 = ranked[:3]
@@ -306,24 +307,30 @@ def _decide_rotation(scores: List[dict], held_codes: set, pe_pct: float) -> Tupl
 
 # ── 主入口 ──
 
-def run_rotation(pool, positions: List[dict], total_assets: float, pe_pct: float) -> Tuple[List[RotationOrder], str]:
-    """板块轮动主入口
+def run_rotation(positions: List[dict], total_assets: float, pe_pct: float,
+                 universe: Optional[List[dict]] = None) -> Tuple[List[RotationOrder], str]:
+    """行业轮动主入口
 
     Args:
-        pool: SATELLITE_POOL 列表
-        positions: 当前所有持仓（含卫星 ETF）
+        positions: 当前所有持仓（含轮动 ETF）
         total_assets: 总资产
         pe_pct: PE 分位
+        universe: 行业 ETF 清单，默认取 ETF_INDUSTRY_MAP 全行业清单
 
     Returns:
         orders: 调仓指令列表
         summary: 报告用摘要
     """
-    # 识别当前卫星持仓
-    pool_codes = {a.code for a in pool}
+    if universe is None:
+        from src.etf.amazing_factors import get_industry_etf_universe
+
+        universe = get_industry_etf_universe()
+
+    # 识别当前轮动持仓
+    universe_codes = {u["code"] for u in universe}
     held = {}
     for p in positions:
-        if p["code"] in pool_codes and p.get("count", 0) > 0:
+        if p["code"] in universe_codes and p.get("count", 0) > 0:
             held[p["code"]] = {
                 "shares": p["count"],
                 "price": p.get("current_price", 0),
@@ -331,7 +338,7 @@ def run_rotation(pool, positions: List[dict], total_assets: float, pe_pct: float
             }
 
     # 打分
-    scores = score_all_pool(pool)
+    scores = score_all_etfs(universe)
 
     # 决策
     enter_codes, exit_codes, rank_summary = _decide_rotation(
@@ -340,8 +347,8 @@ def run_rotation(pool, positions: List[dict], total_assets: float, pe_pct: float
 
     # 生成订单
     orders: List[RotationOrder] = []
-    satellite_budget = total_assets * MAX_BUDGET_RATIO
-    per_position = satellite_budget / max(TOP_N, 1)
+    rotation_budget = total_assets * MAX_BUDGET_RATIO
+    per_position = rotation_budget / max(TOP_N, 1)
 
     score_map = {s["code"]: s for s in scores}
 
@@ -371,9 +378,9 @@ def run_rotation(pool, positions: List[dict], total_assets: float, pe_pct: float
         ))
 
     # 汇总
-    header = f"## 卫星仓 — 板块轮动\n\nPE分位: {pe_pct:.0f}%"
+    header = f"## 行业轮动 — 动量选行业\n\nPE分位: {pe_pct:.0f}%"
     if pe_pct >= PE_THRESHOLD:
-        header += f" — 🔒 高估锁仓，卫星仓不激活\n\n"
+        header += f" — 🔒 高估锁仓，轮动不激活\n\n"
     else:
         header += f" | 仓位上限: {MAX_BUDGET_RATIO*100:.0f}% | 最多 {TOP_N} 只\n\n"
 
@@ -391,7 +398,7 @@ def run_rotation(pool, positions: List[dict], total_assets: float, pe_pct: float
             if held_list:
                 header += f"\n无调仓 | 当前持有: {', '.join(held_list)}\n"
             else:
-                header += "\n无调仓 | 当前无卫星持仓\n"
+                header += "\n无调仓 | 当前无轮动持仓\n"
 
     return orders, header
 
@@ -407,3 +414,18 @@ def _get_price(code: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+if __name__ == "__main__":
+    """独立观察入口：扫描全行业 ETF 清单并输出动量排名（不交易）"""
+    from src.etf.amazing_factors import get_industry_etf_universe, get_market_pe
+
+    universe = get_industry_etf_universe()
+    scores = score_all_etfs(universe)
+    market_pe = get_market_pe()
+    pe_pct = market_pe.get("pe_pct", 0) if market_pe else 0
+    print(f"全行业 ETF 清单 {len(universe)} 只 | PE分位: {pe_pct:.0f}%")
+    for s in scores:
+        err = " [数据缺失]" if s.get("error") else ""
+        print(f"  {s['name']}({s['code']}) 得分:{s['score']:2d}  "
+              f"20日:{s.get('ret_20d', 0):+.1f}% 5日:{s.get('ret_5d', 0):+.1f}%{err}")

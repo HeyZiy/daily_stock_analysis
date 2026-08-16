@@ -17,6 +17,7 @@ Base URL: https://mkapi2.dfcfs.com/finskillshub
 
 import logging
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -143,6 +144,32 @@ class MXMoniClient:
             "fltOrderDrt": direction,
             "fltOrderStatus": status,
         })
+
+    def get_last_buy_dates(self) -> Dict[str, str]:
+        """查询历史成交，返回 {code: 最近一次买入成交日期(YYYY-MM-DD)}。
+
+        用于无状态推导持仓起点：持仓接口无"持仓天数"字段，
+        用历史委托（drt=1、已成交）的委托时间替代。
+        """
+        result = self.get_orders(direction=1)
+        dates: Dict[str, str] = {}
+        if not result or result.get("code") not in ("0", "200"):
+            return dates
+        orders = (result.get("data") or {}).get("orders") or []
+        for o in orders:
+            code = o.get("secCode", "")
+            if o.get("status", 0) not in (3, 4):  # 部成/已成
+                continue
+            ts = o.get("time", 0)
+            if not code or not ts:
+                continue
+            try:
+                d = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+            if code not in dates or d > dates[code]:
+                dates[code] = d
+        return dates
 
     # ── 撤单 ──
 

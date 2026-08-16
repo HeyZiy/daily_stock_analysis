@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from src.etf.config import (
     AssetAllocation, AssetType, NEUTRAL_BASELINE, PROTECTED_TYPES,
     get_equity_total_weight, get_gate_offset, get_rebalance_threshold,
+    get_rotation_universe_codes,
     MIN_TRADE_DEVIATION, REBALANCE_TOTAL_THRESHOLD,
 )
 from src.mx.client import MXMoniClient
@@ -139,13 +140,13 @@ class ETFRebalancer:
                     current[code]["current_price"] = price
                 logger.debug(f"{code} 价格: {price:.3f}")
 
-    def _build_current_map(self, positions: List[dict], total_assets: float) -> Dict[str, dict]:
-        """将持仓列表转为 {code: {market_value, current_pct}}"""
+    def _build_current_map(self, positions: List[dict], capital: float) -> Dict[str, dict]:
+        """将持仓列表转为 {code: {market_value, current_pct}}（占比按给定资金口径）"""
         result = {}
         for p in positions:
             code = p.get("code", "")
             mv = float(p.get("market_value", 0) or 0)
-            pct = mv / total_assets if total_assets > 0 else 0.0
+            pct = mv / capital if capital > 0 else 0.0
             result[code] = {
                 "market_value": mv,
                 "current_pct": pct,
@@ -155,14 +156,39 @@ class ETFRebalancer:
             }
         return result
 
+    def split_rotation_positions(self, positions: List[dict]) -> Tuple[List[dict], float, List[dict]]:
+        """拆分核心持仓与行业轮动持仓。
+
+        轮动持仓独立预算，不参与核心仓偏离计算；
+        核心资金 = 总资产 − 轮动持仓市值。
+
+        Returns:
+            (core_positions, rotation_mv, rotation_positions)
+        """
+        rotation_codes = get_rotation_universe_codes()
+        core_positions, rotation_positions = [], []
+        rotation_mv = 0.0
+        for p in positions:
+            if p.get("code", "") in rotation_codes:
+                rotation_mv += float(p.get("market_value", 0) or 0)
+                rotation_positions.append(p)
+            else:
+                core_positions.append(p)
+        return core_positions, rotation_mv, rotation_positions
+
     def compare(self, target: Dict[str, float], positions: List[dict],
                 total_assets: float, gate_state: str, hard_intercept: bool) -> Tuple[List[RebalanceOrder], float]:
         """比较目标 vs 实际，生成调仓指令
 
+        资金口径：核心资金 = 总资产 − 轮动持仓市值。
+        轮动持仓独立预算，不参与核心偏离计算，也不会被核心再平衡卖出。
+
         Returns:
             (orders, total_deviation) 调仓指令列表 + 总偏离度
         """
-        current = self._build_current_map(positions, total_assets)
+        core_positions, rotation_mv, _ = self.split_rotation_positions(positions)
+        core_assets = max(total_assets - rotation_mv, 0.0)
+        current = self._build_current_map(core_positions, core_assets)
         # 补齐未持仓 ETF 的行情价格
         self._fill_missing_prices(current)
         threshold = get_rebalance_threshold(gate_state)
@@ -182,7 +208,7 @@ class ETFRebalancer:
             if abs(deviation) < MIN_TRADE_DEVIATION:
                 continue
 
-            amount = deviation * total_assets
+            amount = deviation * core_assets
             cur_price = cur.get("current_price", 0) or 0
 
             if deviation > 0:
@@ -269,7 +295,9 @@ class ETFRebalancer:
         """
         from datetime import datetime
 
-        current = self._build_current_map(positions, total_assets)
+        core_positions, rotation_mv, rotation_positions = self.split_rotation_positions(positions)
+        core_assets = max(total_assets - rotation_mv, 0.0)
+        current = self._build_current_map(core_positions, core_assets)
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         # 选择偏移来源
@@ -287,11 +315,18 @@ class ETFRebalancer:
         else:
             gate_line = f"**Gate**: {gate_state}" + (" + 硬拦截" if hard_intercept else "")
 
+        assets_line = f"**总资产**: {total_assets:,.0f} 元"
+        if rotation_mv > 0:
+            rotation_names = "、".join(
+                f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions
+            )
+            assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **轮动持仓**: {rotation_mv:,.0f} 元（{rotation_names}）"
+
         lines = [
             f"# ETF 长期配置日报",
             f"",
             f"**时间**: {now} | {gate_line}",
-            f"**总资产**: {total_assets:,.0f} 元",
+            assets_line,
             f"**权益偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}% → 现金",
             f"",
             "---",

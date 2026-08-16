@@ -1,228 +1,138 @@
-﻿# 📊 Regime Trader — 全天候策略系统
+# Regime Trader — A股智能交易系统
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
+个人 A 股量化交易系统：趋势波段、ETF 长期配置、行业轮动观察 + LLM 策略规划器（自进化）。
 
-一个自进化的全天候量化策略系统：根据市场状态自动规划策略配置，覆盖趋势跟踪、ETF资产配置、行业轮动等多策略。
-
----
-
-## 框架
-
-```
-                    ┌─────────────────────┐
-                    │    策略规划器          │  ← 每周末运行
-                    │  strategy_planner.py │     市场诊断 + 策略适配
-                    │  LLM 驱动 + 自进化     │     策略权重分配 + 进化
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────┴──────────┐
-                    │   市场环境门控        │  ← 共享，每日收盘后运行
-                    │   market_gate.py     │
-                    │   硬拦截 + 4项条件     │
-                    └──────────┬──────────┘
-                               │
-            ┌──────────────────┼──────────────────┐
-            ▼                                     ▼
-    ┌───────────────┐                     ┌───────────────┐
-    │  ETF 长期配置   │                     │  趋势交易策略   │
-    │  压舱石        │                     │  练手          │
-    │               │                     │               │
-    │  估值门控 →    │                     │  信号检测 →    │
-    │  再平衡执行     │                     │  买卖报告       │
-    └───────────────┘                     └───────────────┘
-            │                                     │
-            ▼                                     ▼
-    ┌─────────────────────────────────────────────────────┐
-    │  妙想模拟仓 (mx-moni)                                │
-    │  持仓查询 / 市价买卖 / 资金管理                       │
-    └─────────────────────────────────────────────────────┘
-            │
-            ▼
-    ┌─────────────────────────────────────────────────────┐
-    │  通知渠道                                             │
-    │  飞书 / 钉钉 / Discord / 邮件 / 企业微信              │
-    └─────────────────────────────────────────────────────┘
-```
-
----
+- **数据**：多源行情（AmazingData > efinance > akshare > tushare > baostock > yfinance），自动降级容错
+- **交易**：妙想模拟仓 API（`src/mx/`）
+- **通知**：飞书 / 钉钉 / 企业微信 / 邮件多渠道推送
+- **部署**：Linux 云服务器 + crontab（已从 GitHub Actions 迁移）
 
 ## 策略体系
 
-### 策略规划器（自进化）
+资金分配口径见 [strategy/overview.md](strategy/overview.md)，各策略文档见 [strategy/](strategy/)：
 
-每周末由 LLM 诊断市场阶段，对策略池中所有策略进行适配度打分和权重分配。LLM 还能主动提议新策略，经审批后加入策略池。
+| 账户 | 策略 | 状态 | 文档 |
+|---|---|---|---|
+| 主账户 | ETF 长期配置（核心仓） | 运行中 | [etf_allocation.md](strategy/etf_allocation.md) |
+| 主账户 | 量价爆发突破 — ETF 火箭（卫星仓） | 已实现待验证 | [rocket_breakout.md](strategy/rocket_breakout.md) |
+| 主账户 | 行业轮动 | 观察工具，不交易 | [sector_rotation.md](strategy/sector_rotation.md) |
+| 子账户 | 趋势交易（趋势回调买入） | 运行中 | [trend_strategy.md](strategy/trend_strategy.md) |
+| 子账户 | 量价爆发突破（个股版） | 待审批 | [rocket_breakout.md](strategy/rocket_breakout.md) |
 
-```bash
-python strategy_planner.py              # 市场诊断 + 策略适配 + 进化建议
-python strategy_planner.py --no-llm     # 仅采集数据，跳过 LLM
-python strategy_planner.py --list-strategies  # 查看策略池
-python strategy_planner.py --list-pending    # 查看 LLM 提议的新策略
-python strategy_planner.py --approve ID      # 批准新策略
-```
+> 高股息防御、现金管理、黄金对冲是 ETF 配置内部的资产类别（红利ETF / CASH / 黄金ETF）。
 
-当前策略池内置 9 个策略：趋势回调买入、ETF PE估值配置、行业轮动、高股息防御、现金管理、网格波段、动量追涨、超跌反弹、黄金商品对冲。策略池持久化在 `data/strategy_registry.json`，随 LLM 提议自动扩展。
+## 三个入口
 
-### ETF 长期配置
-
-压舱石。10 只精选 ETF 覆盖 A 股/海外/债券/黄金/现金，中性基准写死，每日 gate 驱动战术偏移，偏离触发再平衡。
-
-```bash
-python etf_allocation.py              # 盘后分析，出再平衡报告
-python etf_allocation.py --execute    # 盘中执行，市价调仓
-```
-
-📖 策略文档：[strategy/etf_allocation.md](strategy/etf_allocation.md)
-
-| gate 状态 | 动作 | 权益偏移 |
+| 脚本 | 定位 | 频率 |
 |---|---|---|
-| trending_up | 加仓 | +15% |
-| sideways | 维持 | ±0 |
-| trending_down | 减仓 | −20% |
-| hard_intercept | 清仓 | −40% |
+| `trend_analysis.py` | 趋势交易：市场门控 + 分歧回踩买点检测 + 观察池维护 + 次日交易计划 | 每交易日 13:30 |
+| `etf_observe.py` | ETF 周度观察 + `--execute` 统一调仓（核心再平衡 + 卫星火箭） | 每周一 9:35 |
+| `strategy_planner.py` | 双 Agent 策略规划器：市场诊断 → 策略适配推荐 → 实现检查 → 自进化提议 | 每周六 9:00 |
 
-### 趋势交易
-
-均线多头 + 缩量回踩 MA5 买点，趋势破坏即卖。不做加速追高，不做情绪高潮接力。
+## 快速开始
 
 ```bash
-python trend_analysis.py              # 日度分析（含松筛选股）
-python trend_analysis.py --debug      # 调试模式
-python trend_analysis.py --list       # 列出自选池
-python trend_analysis.py --screen-keyword "均线多头"  # 自定义选股
-```
-
-📖 策略文档：[strategy/trend_strategy.md](strategy/trend_strategy.md)
-
-| gate 状态 | 系数 | 动作 |
-|---|---|---|
-| trending_up | ×1.0 | 正常买入 |
-| trending_down | ×0.5 | 禁止开仓，收紧止损 |
-| chaos | ×0.0 | 空仓 |
-
----
-
-## 每日执行时序（GitHub Actions）
-
-```
-北京时间
-周一~周五 13:30  ① trend_analysis    → 趋势信号检测 + 买卖建议报告
-               ② etf_allocation    → ETF 再平衡分析（出计划）
-周六 09:00      ③ strategy_planner  → 市场诊断 + 策略适配 + 策略进化
-```
-
----
-
-## 快速开始（GitHub Actions）
-
-### 1. Fork 本仓库
-
-### 2. 配置 Secrets
-
-`Settings` → `Secrets and variables` → `Actions` → `New repository secret`
-
-**必填：**
-
-| Secret | 说明 |
-|---|---|
-| `MX_APIKEY` | 妙想 API Key（选股 + 模拟仓交易） |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key（策略规划器 LLM 分析） |
-
-**通知渠道（至少配一个）：**
-
-| Secret | 说明 |
-|---|---|
-| `FEISHU_WEBHOOK_URL` | 飞书群机器人 |
-| `DINGTALK_WEBHOOK_URL` | 钉钉群机器人 |
-| `DISCORD_WEBHOOK_URL` | Discord Webhook |
-| `EMAIL_SENDER` / `EMAIL_PASSWORD` / `EMAIL_RECEIVERS` | 邮件 |
-
-**可选：**
-
-| Secret | 说明 |
-|---|---|
-| `TUSHARE_TOKEN` | Tushare 数据源 |
-| `SMART_SCREEN_KEYWORD` | 趋势选股条件 |
-
-### 3. 启用 Actions
-
-`Actions` → 选择 workflow → 启用
-
----
-
-## 本地运行
-
-```bash
-git clone <your-fork-url>
-cd trend-sniper
-
+# 1. 环境（本地 Windows 开发 / 服务器 Linux 均可）
+python -m venv .venv
+.venv\Scripts\activate            # Windows；Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-# 配置 .env
-cp .env.example .env
-# 填入 MX_APIKEY、DEEPSEEK_API_KEY 和通知渠道
+# 2. 私有数据源（可选，需账号凭证）
+pip install wheels/AmazingData-1.1.9-cp314-none-any.whl wheels/tgw-1.0.9.2-py3-none-any.whl
 
-# === 策略规划器 ===
-python strategy_planner.py                    # 市场诊断 + 策略适配
-python strategy_planner.py --no-llm           # 只看采集的数据
-python strategy_planner.py --list-strategies  # 查看策略池
+# 3. 创建 .env 并填写：妙想 API、LLM、通知渠道等（见下表）
 
-# === 趋势交易策略 ===
-python trend_analysis.py                    # 完整分析（含松筛选股）
-python trend_analysis.py --debug --no-notify  # 调试
-python trend_analysis.py --list             # 列出自选池
-
-# === ETF 长期配置 ===
-python etf_allocation.py                    # 盘后分析
-python etf_allocation.py --execute          # 盘中执行调仓
+# 4. 运行
+python trend_analysis.py          # 趋势日度分析
+python etf_observe.py             # ETF 周度观察（--execute 才下单）
+python strategy_planner.py        # 策略规划（--no-llm 跳过 LLM）
 ```
 
----
+主要环境变量（`.env`）：
 
-## 市场门控
-
-所有策略共享同一套门控逻辑，见 [strategy/market.md](strategy/market.md)。
-
-**硬拦截（触发任一直接锁仓+清仓）：**
-
-| 条件 | 阈值 |
+| 变量 | 说明 |
 |---|---|
-| 成交额冰点 | 两市 < 1.5 万亿 连 3 天 |
-| 千股跌停 | 跌停 ≥ 50 且 > 涨停 × 3 |
-| 指数暴跌 | 上证跌 > 3% |
-| 成交量骤降 | 当日 < 20 日均量 × 0.5 |
+| `MX_APIKEY` | 妙想模拟仓 API Key |
+| `TGW_*` | AmazingData / TGW 行情服务登录凭证 |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `LITELLM_MODEL` | 策略规划器 LLM |
+| `FEISHU_WEBHOOK_URL` | 飞书群机器人通知（推荐） |
+| `CUSTOM_WEBHOOK_URLS` / `WECHAT_WEBHOOK_URL` | 钉钉 / 企业微信机器人（选填） |
+| `EMAIL_*` | 邮件通知（选填） |
+| `TUSHARE_TOKEN` | Tushare Pro Token（数据源降级备用） |
 
-**4 项门控（≥2 项通过才开仓，trending_down 需 ≥3 项）：**
-
-| # | 条件 | 类型 |
-|---|---|---|
-| ① | 上证 > MA20 | 趋势 |
-| ②a | 两市成交额 ≥ 1.5 万亿 | 量能 |
-| ②b | 成交量 > 近 20 日均量 | 量能 |
-| ③ | 涨停 ≥ 30 且 > 跌停 × 1.5 | 情绪 |
-
----
-
-## 关键环境变量
+## 常用命令
 
 ```bash
-# 妙想 API（必填）
-MX_APIKEY=your_mx_apikey
+# 趋势交易
+python trend_analysis.py --no-screen              # 跳过松筛，只分析当前自选池
+python trend_analysis.py --screen-keyword "..."   # 自定义松筛条件
+python trend_analysis.py --stocks 000001,600519  # 指定股票
+python trend_analysis.py --trade                  # 盘后生成次日交易计划
+python trend_analysis.py --trade-execute          # 盘中执行止损止盈/买入
+python trend_analysis.py --trade-plan             # 查看当前交易计划
 
-# LLM（策略规划器必填）
-DEEPSEEK_API_KEY=your_deepseek_key
-# 或 LLM_CHANNELS=deepseek 配合 LLM_DEEPSEEK_API_KEY
+# ETF 配置
+python etf_observe.py --execute                   # 执行统一调仓批次（妙想市价单）
+python etf_observe.py --force                     # 跳过交易日检查（调试）
 
-# 选股条件（松筛）
-SMART_SCREEN_KEYWORD=市值大于30亿小于500亿；均线多头排列；换手率大于3%；不要科创板不要创业板不要北交所不要ST
+# 策略规划器
+python strategy_planner.py --list-strategies      # 查看策略池
+python strategy_planner.py --list-pending         # 查看待审批策略
+python strategy_planner.py --approve ID           # 批准新策略（--remove ID 移除）
 
-# 通知（至少一个）
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-
-# 日志告警：WARNING 及以上日志推送到通知渠道（默认 WARNING；设为 OFF 禁用）
-LOG_ALERT_LEVEL=WARNING
+# 通用
+python xxx.py --debug --no-notify                 # 调试模式 + 不推送通知
 ```
 
----
+## 目录结构
+
+```
+strategy_planner.py      双 Agent 策略规划器入口（诊断 + 推荐 + 自进化）
+trend_analysis.py        趋势交易日度分析入口
+etf_observe.py           ETF 周度观察/调仓入口
+data_provider/           多源行情数据（优先级降级）
+src/analysis/            市场门控 market_gate、报告生成 report、信号检测 signal_detector、剔除规则 removal_rules
+src/etf/                 ETF 配置：估值门控、再平衡、火箭引擎、行业轮动、因子封装、基准配置
+src/mx/                  妙想模拟仓 API 客户端
+src/notify/              多渠道通知（飞书/钉钉/企业微信/邮件）
+src/strategy_planner/    策略规划器（数据采集 + 双 Agent + 实现检查）
+strategy/                策略设计文档（与代码同步维护）
+data/                    策略池 registry / 待办库 todo / 运行状态缓存
+deploy/crontab.server    服务器定时任务配置
+docs/                    外部工具说明书
+```
+
+## 部署（云服务器）
+
+```bash
+# 前置（详见 deploy/crontab.server 顶部注释）
+cd /srv/regime-trader
+python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+sudo apt-get install -y wkhtmltopdf    # 图片通知（md2img）
+# 配置 .env（含 MX_APIKEY / TGW_* 等），确认时区为 Asia/Shanghai
+
+# 安装定时任务
+crontab deploy/crontab.server
+```
+
+定时任务一览（`flock` 防重入，节假日由 `src/trading_calendar.py` 或 cron 的 `1-5` 处理）：
+
+| 时间 | 任务 |
+|---|---|
+| 每交易日 13:30 | 趋势跟踪分析 |
+| 每周一 9:35 | ETF 周度观察 + 自动调仓 |
+| 每周六 9:00 | 策略规划器 |
+
+## 策略自进化
+
+`strategy_planner.py` 的 Agent2 检查推荐策略是否已有实现，无实现则登记到 `data/strategy_todo.json`；新策略写入 `data/strategy_registry.json` 待审批区，用 `--approve ID` 转正后 Agent1 才会推荐使用。
+
+## 开发约定
+
+- 中文 docstring 与注释；日志经 `src/logging_config.py`（console + file + debug file）
+- 股票代码统一走 `data_provider/base.py:canonical_stock_code()`
+- `strategy/*.md` 与代码**必须同步维护**：改阈值/交易逻辑/信号优先级时，同一提交内更新对应策略文档
+- 无测试套件；无 lint/typecheck 命令
+
 
 > ⚠️ **免责声明**：仅供个人学习研究，不构成投资建议。股市有风险，投资需谨慎。
