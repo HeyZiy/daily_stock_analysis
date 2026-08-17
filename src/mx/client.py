@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 MX_BASE_URL = "https://mkapi2.dfcfs.com/finskillshub"
 
+# 妙想模拟仓服务端无法识别 1 开头深市 ETF/LOF（15/16/18 前缀）的市场号，
+# 交易接口直接拒绝（实测补 .SZ 后缀/传 secMkt 均无效），见 docs/mx_skills/mx-moni.md
+_MX_UNTRADABLE_PREFIXES = ("15", "16", "18")
+MX_UNTRADABLE_REASON = "妙想模拟仓无法识别 1 开头深市 ETF/LOF 的市场号，需手动交易"
+
+
+def is_mx_untradable(stock_code: str) -> bool:
+    """判断代码是否无法通过妙想模拟仓交易（1 开头深市 ETF/LOF）。"""
+    code = (stock_code or "").strip().split(".")[0]
+    return len(code) == 6 and code.startswith(_MX_UNTRADABLE_PREFIXES)
+
 
 class MXMoniClient:
     """妙想模拟组合 API 客户端"""
@@ -119,6 +130,10 @@ class MXMoniClient:
         Returns:
             API 响应 dict，含 orderId 等字段
         """
+        if is_mx_untradable(stock_code):
+            logger.warning(f"{'买入' if trade_type == 'buy' else '卖出'} {stock_code} 跳过: {MX_UNTRADABLE_REASON}")
+            return {"code": "manual_skip", "message": MX_UNTRADABLE_REASON}
+
         payload: Dict[str, Any] = {
             "type": trade_type,
             "stockCode": stock_code,

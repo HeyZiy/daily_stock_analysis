@@ -15,6 +15,7 @@ AmazingData 因子封装层（ETF 周度观察专用）
 - 未配置 TGW 凭证时自动失效（返回 None）
 """
 
+import json
 import logging
 import os
 from typing import Dict, List, Optional, Tuple
@@ -282,47 +283,32 @@ def get_all_industry_factors(industry_names: List[str]) -> dict:
     return result
 
 
-# 常见 ETF → 申万一级行业映射（供调用方快速查行业，也是行业轮动引擎的动态标的清单）
-ETF_INDUSTRY_MAP = {
-    "515010": "非银金融",     # 证券ETF
-    "512000": "非银金融",     # 券商ETF
-    "512880": "非银金融",     # 证券ETF
-    "512800": "银行",         # 银行ETF
-    "159363": "计算机",       # 创业板人工智能ETF
-    "512720": "计算机",       # 计算机ETF
-    "513120": "医药生物",     # 港股创新药
-    "159938": "医药生物",     # 医药ETF
-    "512010": "医药生物",     # 医药ETF
-    "512170": "医药生物",     # 医疗ETF
-    "159206": "国防军工",     # 卫星ETF
-    "512660": "国防军工",     # 军工ETF
-    "588170": "电子",         # 科创半导体ETF
-    "512480": "电子",         # 半导体ETF
-    "159995": "电子",         # 芯片ETF
-    "159928": "食品饮料",     # 消费ETF
-    "512690": "食品饮料",     # 酒ETF
-    "515790": "电力设备",     # 光伏ETF
-    "516160": "电力设备",     # 新能源ETF
-    "515030": "汽车",         # 新能源车ETF
-    "512400": "有色金属",     # 有色金属ETF
-    "515210": "钢铁",         # 钢铁ETF
-    "515220": "煤炭",         # 煤炭ETF
-    "512200": "房地产",       # 房地产ETF
-    "516970": "建筑装饰",     # 基建ETF
-    "512980": "传媒",         # 传媒ETF
-    "159869": "传媒",         # 游戏ETF
-    "515880": "通信",         # 通信ETF
-    "159611": "公用事业",     # 电力ETF
-    "512580": "环保",         # 环保ETF
-    "516560": "社会服务",     # 养老ETF
-    "159766": "社会服务",     # 旅游ETF
-    "159996": "家用电器",     # 家电ETF
-    "159865": "农林牧渔",     # 养殖ETF
-    "159870": "基础化工",     # 化工ETF
-    "159930": "石油石化",     # 能源ETF
-    "159745": "建筑材料",     # 建材ETF
-    # 宽基/策略 ETF 不映射具体行业，走全市场 PE：
-    # 563360(A500) / 159680(中证1000增强) / 515180(红利)
+# ── 行业 ETF 清单（data/etf_industry_map.json，便于人工维护） ──
+# 清单依据 2026-08 人工调研（规模 + 当日成交额筛选，首选/备选）；无对应行业 ETF 的行业不强求。
+# 注：1 开头深市 ETF/LOF 妙想模拟仓无法交易（见 docs/mx_skills/mx-moni.md），执行时自动跳过转手动待办。
+
+_ETF_INDUSTRY_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "etf_industry_map.json",
+)
+
+
+def _load_industry_entries() -> List[dict]:
+    """加载行业 ETF 清单（[{code, name, industry, note}, ...]），文件缺失/损坏时返回空表。"""
+    try:
+        with open(_ETF_INDUSTRY_FILE, encoding="utf-8") as f:
+            entries = json.load(f)
+        return [e for e in entries if e.get("code") and e.get("industry")]
+    except Exception as e:
+        logger.warning(f"行业 ETF 清单加载失败（{_ETF_INDUSTRY_FILE}）: {e}")
+        return []
+
+
+_ETF_INDUSTRY_ENTRIES = _load_industry_entries()
+
+# 兼容映射：ETF 代码 → 申万一级行业名
+ETF_INDUSTRY_MAP: Dict[str, str] = {
+    e["code"]: e["industry"] for e in _ETF_INDUSTRY_ENTRIES
 }
 
 
@@ -334,8 +320,8 @@ def get_etf_industry(etf_code: str) -> Optional[str]:
 def get_industry_etf_universe() -> List[dict]:
     """行业轮动引擎的动态标的清单：[{'code', 'name', 'industry'}, ...]"""
     return [
-        {"code": code, "name": industry, "industry": industry}
-        for code, industry in ETF_INDUSTRY_MAP.items()
+        {"code": e["code"], "name": e["name"], "industry": e["industry"]}
+        for e in _ETF_INDUSTRY_ENTRIES
     ]
 
 

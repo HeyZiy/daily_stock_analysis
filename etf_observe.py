@@ -21,6 +21,7 @@ import argparse
 import io
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from typing import List
@@ -36,6 +37,7 @@ from src.etf.amazing_factors import (
     get_market_pe, get_treasury_yield_y10,
     rank_buy_priorities, check_sell_warnings,
 )
+from src.mx.client import is_mx_untradable
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +298,8 @@ def _holding_overview(alloc=None) -> str:
         lines.append("**建议调仓指令（仅供参考，不自动执行）**")
         lines.append("")
         for o in orders:
-            lines.append(f"- {o.action.upper()} {o.name}({o.code}) {o.quantity}股 ≈ {o.amount:,.0f}元 — {o.reason}")
+            manual_mark = " ⚠️ 妙想无法交易，需手动" if is_mx_untradable(o.code) else ""
+            lines.append(f"- {o.action.upper()} {o.name}({o.code}) {o.quantity}股 ≈ {o.amount:,.0f}元 — {o.reason}{manual_mark}")
     else:
         lines.append("")
         lines.append("无调仓需求，保持当前配置。")
@@ -334,12 +337,22 @@ def _satellite_overview(rocket: dict) -> str:
 
     lines.append("### 持仓与建议")
     lines.append("")
+    manual_codes = {
+        o.code for o in (list(rocket.get("sells", [])) + list(rocket.get("buy_orders", [])))
+        if is_mx_untradable(o.code)
+    }
+
+    def _note_line(n: str, prefix: str) -> str:
+        m = re.search(r"\((\d{6})\)", n)
+        mark = " ⚠️ 需手动" if m and m.group(1) in manual_codes else ""
+        return f"- {prefix}：{n}{mark}"
+
     if rocket["sell_notes"]:
         for n in rocket["sell_notes"]:
-            lines.append(f"- 🔴 卖出：{n}")
+            lines.append(_note_line(n, "🔴 卖出"))
     if rocket["buy_notes"]:
         for n in rocket["buy_notes"]:
-            lines.append(f"- 🟢 买入：{n}")
+            lines.append(_note_line(n, "🟢 买入"))
     if not rocket["sell_notes"] and not rocket["buy_notes"]:
         lines.append("无调仓建议")
     lines.append("")
@@ -368,7 +381,7 @@ def _rotation_observe(rocket: dict) -> str:
 
 def _execute_batch(alloc: dict) -> str:
     """执行调仓批次（卫星卖 → 核心卖 → 核心买 → 卫星买，带全批次资金校验）"""
-    from src.mx.client import MXMoniClient
+    from src.mx.client import MXMoniClient, is_mx_untradable, MX_UNTRADABLE_REASON
     from src.etf import rocket_breakout as rocket_mod
 
     core_orders = alloc["orders"]
@@ -418,8 +431,13 @@ def _execute_batch(alloc: dict) -> str:
     results: List[str] = []
     client = alloc["client"]
 
+    # 1 开头深市 ETF/LOF 妙想无法交易：跳过 API，转为手动待办
+    all_orders = sells + buys
+    executable = [o for o in all_orders if not is_mx_untradable(o.code)]
+    manual = [o for o in all_orders if is_mx_untradable(o.code)]
+
     # 先卖后买（卫星卖 → 核心卖 → 核心买 → 卫星买）
-    for order in sells + buys:
+    for order in executable:
         qty = _qty(order)
         resp = client.trade(
             trade_type=order.action,
@@ -433,10 +451,24 @@ def _execute_batch(alloc: dict) -> str:
         results.append(f"{mark} {order.action.upper()} {order.name}({order.code}) {qty}股 ≈ {order.amount:,.0f}元 —— {'成功' if ok else f'失败: {msg}'}")
 
     lines.append(f"**总资产**: {total_assets:,.0f} 元 | **可用资金**: {avail_balance:,.0f} 元")
-    lines.append(f"本次执行 {len(sells) + len(buys)} 笔（卖出 {len(sells)}，买入 {len(buys)}）：")
+    lines.append(
+        f"本次执行 {len(executable)} 笔（卖出 {sum(1 for o in executable if o.action == 'sell')}，"
+        f"买入 {sum(1 for o in executable if o.action == 'buy')}）"
+        + (f"，另有 {len(manual)} 笔需手动" if manual else "")
+    )
     lines.append("")
     lines.extend(f"- {r}" for r in results)
     lines.append("")
+
+    if manual:
+        lines.append("### ⚠️ 需手动处理（妙想无法交易 1 开头深市 ETF/LOF）")
+        lines.append("")
+        lines.append(f"> {MX_UNTRADABLE_REASON}，请登录妙想 App 手动操作：")
+        lines.append("")
+        for o in manual:
+            verb = "买入" if o.action == "buy" else "卖出"
+            lines.append(f"- 手动{verb} {o.name}({o.code}) {_qty(o)}股 ≈ {o.amount:,.0f}元 — {o.reason}")
+        lines.append("")
 
     # 执行后复核持仓
     fresh = MXMoniClient().get_positions()

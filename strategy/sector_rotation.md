@@ -14,7 +14,7 @@
 
 | 维度 | 规则 |
 |---|---|
-| 标的清单 | `ETF_INDUSTRY_MAP` 动态全行业清单（37 只，覆盖约 24 个申万一级行业） |
+| 标的清单 | `data/etf_industry_map.json`（41 只，覆盖 24 个申万一级行业；按 2026-08 人工调研的规模/成交额首选备选表维护，无对应行业 ETF 的行业不强求），代码侧由 `amazing_factors.get_industry_etf_universe()` 加载 |
 | 打分 | 20日涨幅(0-30) + 5日涨幅(0-25) + 均线排列(0-25) + 量能(0-20) ± 行业PE/拥挤度修正 |
 | 排名输出 | 周报第五节，前 6 名 |
 | 数据 | ETF 日线（akshare，降级 `DataFetcherManager`）、行业估值（AmazingData） |

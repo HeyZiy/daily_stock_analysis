@@ -70,14 +70,14 @@ class AmazingDataFetcher(BaseFetcher):
     """
     AmazingData 数据源实现
 
-    优先级：0（最高，需要 TGW 凭证）
+    优先级：-2（最高，需要 TGW 凭证，高于 Tushare 的 -1）
     数据来源：星耀数智行情平台（query_kline）
     """
 
     name = "AmazingDataFetcher"
-    # 默认最高优先级（-1，高于 Akshare/Efinance 的 0/1）；
+    # 默认最高优先级（-2，高于 Tushare(-1)/Akshare(0)/Efinance(1)）；
     # 未配置凭证时不注册。失败时由 DataFetcherManager 自动切换到下一数据源
-    priority = int(os.getenv("AMAZINGDATA_PRIORITY", "-1"))
+    priority = int(os.getenv("AMAZINGDATA_PRIORITY", "-2"))
 
     # 登录单例
     _login_lock = threading.Lock()

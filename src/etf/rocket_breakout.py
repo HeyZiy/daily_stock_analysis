@@ -373,6 +373,9 @@ def analyze_satellite(positions: List[dict], total_assets: float,
     持仓起点（成本/买入日）全部来自模拟仓接口，无本地状态文件：
     - 成本价：positions 的 cost_price
     - 买入日期：client.get_last_buy_dates() 推导（查不到则跳过日期类退出规则）
+
+    标的口径与再平衡引擎一致：卫星标的 = ETF_INDUSTRY_MAP − 核心基准代码，
+    核心仓标的（如 516560 养老ETF）不纳入卫星买卖与市值统计。
     """
     results = analyze_universe()
 
@@ -382,6 +385,11 @@ def analyze_satellite(positions: List[dict], total_assets: float,
             entry_map = client.get_last_buy_dates()
         except Exception:
             logger.warning("历史委托查询失败，日期类退出规则降级跳过", exc_info=True)
+
+    # 卫星标的 = 行业清单 − 核心基准（核心仓由再平衡引擎管理）
+    from src.etf.config import get_rotation_universe_codes
+    sat_codes = get_rotation_universe_codes()
+    results = [r for r in results if r["code"] in sat_codes]
 
     sells, sell_notes = build_sell_orders(results, positions, entry_map, pe_pct, hard_intercept)
 

@@ -2,7 +2,7 @@
 
 个人 A 股量化交易系统：趋势波段、ETF 长期配置、行业轮动观察 + LLM 策略规划器（自进化）。
 
-- **数据**：多源行情（AmazingData > efinance > akshare > tushare > baostock > yfinance），自动降级容错
+- **数据**：多源行情（AmazingData > tushare > akshare > efinance > baostock > yfinance），自动降级容错
 - **交易**：妙想模拟仓 API（`src/mx/`）
 - **通知**：飞书 / 钉钉 / 企业微信 / 邮件多渠道推送
 - **部署**：Linux 云服务器 + crontab（已从 GitHub Actions 迁移）

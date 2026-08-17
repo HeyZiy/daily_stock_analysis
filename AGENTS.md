@@ -15,10 +15,11 @@ src/etf/                        ← ETF 配置：估值门控(allocation_gate)�
                                    因子封装(amazing_factors)、基准(config)
 src/notify/                     ← 多渠道通知（飞书/邮件）
 src/mx/                         ← 妙想模拟仓 API 客户端
-data_provider/                  ← 多源行情数据（AmazingData > efinance > akshare > tushare > baostock > yfinance）
+data_provider/                  ← 多源行情数据（AmazingData > tushare > akshare > efinance > baostock > yfinance）
 
 data/strategy_registry.json     ← 策略池（LLM 可提议新策略进待审批区，--approve 转正）
 data/strategy_todo.json         ← 策略待办库（Agent2 发现推荐策略无实现时登记，含 doc_ref）
+data/etf_industry_map.json      ← 行业 ETF 清单（申万行业 → 首选/备选 ETF，卫星仓/轮动引擎标的池）
 ```
 
 ## Commands

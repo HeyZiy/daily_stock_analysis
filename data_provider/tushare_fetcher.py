@@ -76,7 +76,7 @@ class TushareFetcher(BaseFetcher):
     """
     Tushare Pro 数据源实现
     
-    优先级：2
+    优先级：2（默认；Token 配置且 API 初始化成功时提升为 -1，仅次于 AmazingData）
     数据来源：Tushare Pro API
     
     关键策略：
@@ -184,17 +184,17 @@ class TushareFetcher(BaseFetcher):
         根据 Token 配置和 API 初始化状态确定优先级
 
         策略：
-        - Token 配置且 API 初始化成功：优先级 -1（绝对最高，优于 efinance）
+        - Token 配置且 API 初始化成功：优先级 -1（仅次于 AmazingData 的 -2）
         - 其他情况：优先级 2（默认）
 
         Returns:
-            优先级数字（0=最高，数字越大优先级越低）
+            优先级数字（-2=最高，数字越大优先级越低）
         """
         config = get_config()
 
         if config.tushare_token and self._api is not None:
-            # Token 配置且 API 初始化成功，提升为最高优先级
-            logger.info("✅ 检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升为最高 (Priority -1)")
+            # Token 配置且 API 初始化成功，提升为次高优先级（仅次于 AmazingData）
+            logger.info("✅ 检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升 (Priority -1，仅次于 AmazingData)")
             return -1
 
         # Token 未配置或 API 初始化失败，保持默认优先级
@@ -289,10 +289,10 @@ class TushareFetcher(BaseFetcher):
         
         # Regular stocks
         # Shanghai: 600xxx, 601xxx, 603xxx, 688xxx (STAR Market)
-        # Shenzhen: 000xxx, 002xxx, 300xxx (ChiNext)
+        # Shenzhen: 000xxx, 001xxx, 002xxx, 003xxx (主板), 300xxx (ChiNext)
         if code.startswith(('600', '601', '603', '688')):
             return f"{code}.SH"
-        elif code.startswith(('000', '002', '300')):
+        elif code.startswith(('000', '001', '002', '003', '300')):
             return f"{code}.SZ"
         else:
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
@@ -711,8 +711,7 @@ class TushareFetcher(BaseFetcher):
     def get_market_stats(self) -> Optional[dict]:
         """
         获取市场涨跌统计 (Tushare Pro)
-        2000积分 每天访问该接口 ts.pro_api().rt_k 两次
-        接口限制见：https://tushare.pro/document/1?doc_id=108
+        仅支持盘后 daily 接口；盘中返回 None，由管理器降级到其他数据源
         """
         if self._api is None:
             return None
@@ -741,43 +740,35 @@ class TushareFetcher(BaseFetcher):
             else:
                 use_realtime = False
 
-            # 若实盘的时候使用 则使用其他可以实盘获取的数据源 akshare、efinance
+            # 盘中：没有 rt_k 实时接口权限，直接返回 None，交由其他数据源（akshare/efinance）处理
             if use_realtime:
-                try:
-                    df = self._api.rt_k(ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
-                    if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
-                    
-                except Exception as e:
-                    logger.error(f"[Tushare] ts.pro_api().rt_k 尝试获取实时数据失败: {e}")
-                    return None
+                return None
+
+            if current_date not in self.date_list:
+                last_date = self.date_list[0] # 拿最近的日期
             else:
+                if current_clock < '09:30': 
+                    last_date = self.date_list[1] # 拿取前一天的数据
+                else:  # 即 '> 16:30'                  
+                    last_date = self.date_list[0] # 拿取当天的数据
 
-                if current_date not in self.date_list:
-                    last_date = self.date_list[0] # 拿最近的日期
-                else:
-                    if current_clock < '09:30': 
-                        last_date = self.date_list[1] # 拿取前一天的数据
-                    else:  # 即 '> 16:30'                  
-                        last_date = self.date_list[0] # 拿取当天的数据
+            try:
+                df = self._api.daily(TS_CODE='3*.SZ,6*.SH,0*.SZ,92*.BJ',start_date=last_date, end_date=last_date)
+                # 统一将列名转为小写
+                df.columns = [col.lower() for col in df.columns]
 
-                try:
-                    df = self._api.daily(TS_CODE='3*.SZ,6*.SH,0*.SZ,92*.BJ',start_date=last_date, end_date=last_date)
-                    # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
-                    df.columns = [col.lower() for col in df.columns]
+                # 获取股票基础信息（包含代码和名称）
+                df_basic = self._api.stock_basic(fields='ts_code,name')
+                df = pd.merge(df, df_basic, on='ts_code', how='left')
+                # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
+                if 'amount' in df.columns:
+                    df['amount'] = df['amount'] * 1000
 
-                    # 获取股票基础信息（包含代码和名称）
-                    df_basic = self._api.stock_basic(fields='ts_code,name')
-                    df = pd.merge(df, df_basic, on='ts_code', how='left')
-                    # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
-                    if 'amount' in df.columns:
-                        df['amount'] = df['amount'] * 1000
-
-                    if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
-                except Exception as e:
-                    logger.error(f"[Tushare] ts.pro_api().daily 获取数据失败: {e}")
-                    
+                if df is not None and not df.empty:
+                    return self._calc_market_stats(df)
+            except Exception as e:
+                logger.error(f"[Tushare] ts.pro_api().daily 获取数据失败: {e}")
+                
 
             
         except Exception as e:
