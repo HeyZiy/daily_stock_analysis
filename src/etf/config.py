@@ -103,6 +103,14 @@ def get_rotation_universe_codes() -> set:
     return set(ETF_INDUSTRY_MAP) - baseline_codes
 
 
+def get_etf_managed_codes() -> set:
+    """所有由 ETF 系统管理的代码（核心基准 + 行业轮动清单）。
+
+    趋势策略的持仓卖出信号应排除这些代码（由 ETF 系统独立管理）。
+    """
+    return {a.code for a in CORE_BASELINE} | get_rotation_universe_codes()
+
+
 def get_equity_total_weight() -> float:
     return sum(a.neutral_weight for a in NEUTRAL_BASELINE if a.asset_type == AssetType.EQUITY)
 

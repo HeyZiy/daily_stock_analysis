@@ -1080,9 +1080,11 @@ class EfinanceFetcher(BaseFetcher):
             
         return stats
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
-        """
-        获取板块涨跌榜 (efinance)
+    def get_sector_quotes(self) -> Optional[pd.DataFrame]:
+        """获取全量行业板块实时行情（东财），含板块名称/涨跌幅列。
+
+        供卖出规则做"板块明显走弱/主线退潮"判断，比涨跌榜（top/bottom n）
+        覆盖面更全。失败返回 None。
         """
         import efinance as ef
 
@@ -1094,6 +1096,19 @@ class EfinanceFetcher(BaseFetcher):
             df = _ef_call_with_timeout(ef.stock.get_realtime_quotes, ['行业板块'])
             if df is None or df.empty:
                 logger.warning("[efinance] 板块行情数据为空")
+                return None
+            return df
+        except Exception as e:
+            logger.error(f"[efinance] 获取全量板块行情失败: {e}")
+            return None
+
+    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取板块涨跌榜 (efinance)
+        """
+        try:
+            df = self.get_sector_quotes()
+            if df is None or df.empty:
                 return None
 
             change_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'

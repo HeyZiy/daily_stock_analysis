@@ -221,11 +221,72 @@ def _format_signal_summary(signals: List[TechnicalSignal]) -> List[str]:
     return lines
 
 
+def _format_sell_section(sell_rows) -> List[str]:
+    """生成持仓卖出信号板块。
+
+    sell_rows: [(position, SellSignal 或 None, sector, sector_pct), ...]
+    """
+    from src.mx.position_utils import position_profit_pct
+
+    lines = [
+        "## 🚨 持仓卖出信号",
+        "",
+        "> 持仓事实来源：妙想模拟仓（每日盘后读取）。信号只出建议，执行由用户主动。",
+        "",
+    ]
+
+    if not sell_rows:
+        lines.append("当前无股票持仓（ETF 持仓由 ETF 系统管理，不在此列）。")
+        lines.append("")
+        return lines
+
+    with_signal = [r for r in sell_rows if r[1] is not None]
+    if with_signal:
+        lines.extend([
+            "| 股票 | 建议 | 现价 | 成本 | 盈亏 | 量比 | 触发规则 | 卖出股数 |",
+            "|------|------|------|------|------|------|----------|----------|",
+        ])
+        for pos, sig, _, _ in with_signal:
+            action = "🔴 清仓" if sig.action == "clear" else "🟠 减仓50%"
+            rules = "；".join(sig.reasons)
+            if sig.note:
+                rules += f"（{sig.note}）"
+            lines.append(
+                f"| {sig.name}({sig.code}) | {action} | {sig.current_price:.2f} | "
+                f"{sig.cost_price:.2f} | {sig.profit_pct:+.1f}% | {sig.vol_ratio:.1f} | "
+                f"{rules} | {sig.suggest_shares}股 |"
+            )
+        lines.append("")
+
+    holds = [r for r in sell_rows if r[1] is None]
+    if holds:
+        lines.extend([
+            "**无卖出信号持仓（继续持有观察）**",
+            "",
+            "| 股票 | 现价 | 成本 | 盈亏 | 板块 |",
+            "|------|------|------|------|------|",
+        ])
+        for pos, _, sector, sector_pct in holds:
+            pct = position_profit_pct(pos)
+            sector_label = sector or "—"
+            if sector_pct is not None:
+                sector_label += f"（当日{sector_pct:+.1f}%）"
+            lines.append(
+                f"| {pos.get('name', '')}({pos.get('code', '')}) | "
+                f"{float(pos.get('current_price', 0) or 0):.2f} | "
+                f"{float(pos.get('cost_price', 0) or 0):.2f} | {pct:+.1f}% | {sector_label} |"
+            )
+        lines.append("")
+
+    return lines
+
+
 def generate_technical_report(
     signals: List[TechnicalSignal],
     removed_stocks: Optional[List[Tuple[str, str, str]]] = None,
     market_env: Optional[Tuple] = None,
     failed_stocks: Optional[List[Tuple[str, str, str]]] = None,
+    sell_rows: Optional[List] = None,
     detail_level: str = "standard",
 ) -> str:
     """
@@ -236,6 +297,7 @@ def generate_technical_report(
         removed_stocks: (code, name, reason) 元组列表
         market_env: (can_trade, conditions, summary, regime) 或 None
         failed_stocks: (code, name, reason) 元组列表
+        sell_rows: [(position, SellSignal 或 None, sector, sector_pct), ...]
         detail_level: "compact"（通知精简）| "standard"（文件标准）| "full"（完整含操作计划）
 
     Returns:
@@ -293,6 +355,11 @@ def generate_technical_report(
             "---",
             "",
         ])
+
+    # 持仓卖出信号
+    if sell_rows is not None:
+        lines.extend(_format_sell_section(sell_rows))
+        lines.extend(["---", ""])
 
     # 剔除股票
     if removed_stocks:

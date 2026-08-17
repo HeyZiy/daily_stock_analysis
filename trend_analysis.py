@@ -15,8 +15,7 @@
 核心策略：
 - 买点：主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）
 - 不做：加速追高、情绪高潮接力、连续大阳后追涨
-- 第一卖点(减仓50%)：放量跌破5日线 / 高位长阴 / 回撤≥5%
-- 第二卖点(清仓)：跌破10日线 / 放量跌破10日线
+- 卖出：每日读取妙想模拟仓持仓，输出卖出信号（减仓50%/清仓，见 sell_rules）
 - 环境过滤：见 strategy/market.md
 - 趋势不走坏即保留，连续2天跌破10日线才剔除
 
@@ -41,8 +40,14 @@ from src.analysis.market_gate import check_market_gate
 from src.config import setup_env
 from src.notify.service import NotificationService
 from src.mx.service import MXService
+from src.mx.client import MXMoniClient
+from src.mx.position_utils import filter_held_positions, get_last_buy_dates_safe
+from src.etf.config import get_etf_managed_codes
 from src.analysis.analyzer import StockTrendAnalyzer
 from src.analysis.strategy.removal_rules import check_removal_rules
+from src.analysis.strategy.sell_rules import (
+    detect_sell_signals, fetch_sector_pct_map, match_sector_pct,
+)
 from src.analysis.strategy.signal_detector import TechnicalSignal, detect_pullback_signals
 from src.analysis.report import generate_technical_report
 setup_env()
@@ -338,6 +343,65 @@ def _list_self_selected(analyzer: 'SimpleTechnicalAnalyzer') -> int:
         return 1
 
 
+def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
+                      hard_intercept: bool):
+    """读取妙想模拟仓持仓并检测卖出信号（只出建议，不执行交易）。
+
+    ETF 持仓由 ETF 系统管理，跳过；卖出信号检测见 sell_rules。
+
+    Returns:
+        held_rows: [(position, sell_signal 或 None, sector, sector_pct), ...] 股票持仓
+    """
+    if not os.getenv("MX_APIKEY"):
+        logger.warning("未配置 MX_APIKEY，跳过持仓卖出分析")
+        return []
+
+    client = MXMoniClient()
+    positions = filter_held_positions(client.get_positions())
+    if not positions:
+        logger.info("妙想模拟仓当前无持仓")
+        return []
+
+    etf_codes = get_etf_managed_codes()
+    stock_positions = [p for p in positions if p.get("code", "") not in etf_codes]
+    etf_skipped = len(positions) - len(stock_positions)
+    if etf_skipped:
+        logger.info(f"跳过 {etf_skipped} 只 ETF 持仓（由 ETF 系统管理）")
+
+    entry_map = get_last_buy_dates_safe(client)
+    sector_pct_map = fetch_sector_pct_map()
+    if not sector_pct_map:
+        logger.warning("板块行情不可用，板块类卖出规则（板块走弱/主线退潮）跳过")
+
+    held_rows = []
+    for p in stock_positions:
+        code = canonical_stock_code(p.get("code", ""))
+        name = p.get("name", "") or code
+        sector = analyzer._fetch_stock_sector(code)
+        sector_pct = match_sector_pct(sector, sector_pct_map)
+
+        sig = None
+        df = analyzer.fetch_stock_data(code)
+        if df is not None and len(df) >= 10:
+            df = df.sort_values('date').reset_index(drop=True)
+            df = analyzer.trend_analyzer._calculate_mas(df)
+            sig = detect_sell_signals(
+                code, name, df, p, regime, hard_intercept,
+                sector=sector, sector_pct=sector_pct,
+                entry_date=entry_map.get(code, ""),
+            )
+        held_rows.append((p, sig, sector, sector_pct))
+
+        if sig:
+            action_label = "🔴 清仓" if sig.action == "clear" else "🟠 减仓50%"
+            logger.warning(f"{action_label} {name}({code}): {'；'.join(sig.reasons)}")
+        elif df is None:
+            logger.warning(f"    {name}({code}) 行情获取失败，无法检测卖出信号")
+        else:
+            logger.info(f"    {name}({code}) 持仓无卖出信号")
+    return held_rows
+
+
 def _save_report(report: str) -> str:
     """将报告保存到文件并返回路径。"""
     reports_dir = "reports"
@@ -470,9 +534,21 @@ def main():
             s.effective_score = int(s.score * regime_modifier)
             s.regime_note = regime_note
 
+        # 4.5 持仓卖出信号（妙想持仓为事实来源，只出建议，执行由用户主动）
+        held_rows = _analyze_holdings(analyzer, market_regime, hard_intercept)
+
+        # 已持仓股票抑制买入信号（避免"持有又提示买入"）
+        if held_rows:
+            held_codes = {p.get("code", "") for p, _, _, _ in held_rows}
+            filtered = [s for s in signals if s.code not in held_codes]
+            if len(filtered) != len(signals):
+                logger.info(f"抑制 {len(signals) - len(filtered)} 只持仓股票的买入信号")
+            signals = filtered
+
         report = generate_technical_report(signals, removed_stocks,
                                            market_env=(can_trade, market_conditions, market_summary, market_regime),
-                                           failed_stocks=failed_stocks)
+                                           failed_stocks=failed_stocks,
+                                           sell_rows=held_rows)
 
         # 5. 保存报告
         _save_report(report)

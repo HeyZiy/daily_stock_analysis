@@ -9,12 +9,13 @@ strategy_planner.py  → 双 Agent 策略规划器：Agent1 市场诊断+从零�
 src/strategy_planner/           ← 策略规划器（数据采集 + 双 Agent 分析 + 实现检查 + 报告）
 src/analysis/market_gate.py     ← 趋势策略市场门控（硬拦截 + 4项条件 + 5级状态）
 src/analysis/report.py          ← Markdown 日报生成
-src/analysis/strategy/          ← 信号检测(signal_detector.py)、剔除规则(removal_rules.py)
+src/analysis/strategy/          ← 信号检测(signal_detector.py)、剔除规则(removal_rules.py)、
+                                   卖出信号(sell_rules.py，读妙想持仓输出减仓/清仓建议)
 src/etf/                        ← ETF 配置：估值门控(allocation_gate)、再平衡(rebalancer)、
                                    卫星仓火箭引擎(rocket_breakout)、行业轮动观察(sector_rotation)、
                                    因子封装(amazing_factors)、基准(config)
 src/notify/                     ← 多渠道通知（飞书/邮件）
-src/mx/                         ← 妙想模拟仓 API 客户端
+src/mx/                         ← 妙想模拟仓 API 客户端 + 持仓公共工具(position_utils)
 data_provider/                  ← 多源行情数据（AmazingData > tushare > akshare > efinance > baostock > yfinance）
 
 data/strategy_registry.json     ← 策略池（LLM 可提议新策略进待审批区，--approve 转正）
@@ -32,15 +33,12 @@ python strategy_planner.py --list-strategies  # 查看策略池
 python strategy_planner.py --list-pending     # 查看待审批策略
 python strategy_planner.py --approve ID       # 批准新策略（--remove ID 移除）
 
-# 趋势交易（每交易日 13:30 盘后）
-python trend_analysis.py                    # 日度分析（默认先松筛补充自选池再分析）
+# 趋势交易（每交易日 15:10 收盘后）
+python trend_analysis.py                    # 日度分析（买入信号 + 持仓卖出信号；先松筛补充自选池再分析）
 python trend_analysis.py --no-screen        # 跳过松筛，只分析当前自选池
 python trend_analysis.py --screen-keyword "..."  # 自定义松筛条件
 python trend_analysis.py --stocks 000001,600519  # 指定股票（覆盖妙想自选股）
 python trend_analysis.py --list             # 仅列出自选池
-python trend_analysis.py --trade            # 盘后：生成次日交易计划
-python trend_analysis.py --trade-execute    # 盘中：执行止损止盈/买入
-python trend_analysis.py --trade-plan       # 查看当前交易计划
 python trend_analysis.py --debug --no-notify
 
 # ETF 长期配置（每周一 9:35）

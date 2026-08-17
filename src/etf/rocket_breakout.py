@@ -31,6 +31,8 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.mx.position_utils import filter_held_positions, get_last_buy_dates_safe
+
 logger = logging.getLogger(__name__)
 
 SATELLITE_BUDGET_RATIO = 0.10   # 卫星仓总仓位上限（总资产占比）
@@ -255,9 +257,9 @@ def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dic
     reasons: List[str] = []
     locked = check_pe_lock(pe_pct) or hard_intercept
 
-    for p in positions:
+    for p in filter_held_positions(positions):
         code = p.get("code", "")
-        if code not in universe_codes or int(p.get("count", 0) or 0) <= 0:
+        if code not in universe_codes:
             continue
         entry_price = float(p.get("cost_price", 0) or 0)
         entry_date = entry_map.get(code, "")
@@ -381,10 +383,7 @@ def analyze_satellite(positions: List[dict], total_assets: float,
 
     entry_map: Dict[str, str] = {}
     if client is not None:
-        try:
-            entry_map = client.get_last_buy_dates()
-        except Exception:
-            logger.warning("历史委托查询失败，日期类退出规则降级跳过", exc_info=True)
+        entry_map = get_last_buy_dates_safe(client)
 
     # 卫星标的 = 行业清单 − 核心基准（核心仓由再平衡引擎管理）
     from src.etf.config import get_rotation_universe_codes
