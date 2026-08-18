@@ -318,6 +318,15 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_realtime_quote(self, stock_code: str, **kwargs) -> Optional["UnifiedRealtimeQuote"]:
+        """
+        获取实时行情（基类兜底实现）。
+
+        默认返回 None，表示「该数据源不支持实时行情」。子类若支持实时行情应覆写此方法；
+        基类提供此兜底后，调用方无需 hasattr 预检，统一以 None 判断「无数据」。
+        """
+        return None
+
     def get_daily_data(
         self,
         stock_code: str, 
@@ -661,17 +670,10 @@ class DataFetcherManager:
                         f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
                         f"rows={len(df)}, elapsed={elapsed:.2f}s"
                     )
-                    # 阶段一：主源缺失关键列时，从其余数据源回退补齐（当前先补换手率）
+                    # 主源缺失关键列时从备用源补齐；补齐后仍缺失则告警（交由下游降级/跳过）
                     df = self._backfill_missing_columns(
                         df, stock_code, start_date, end_date, days, primary_name=fetcher.name
                     )
-                    # 阶段二：回退后仍缺失的关键列显式告警（避免静默失效）
-                    for col in self._BACKFILL_COLUMNS:
-                        if col not in df.columns or df[col].isna().all():
-                            logger.warning(
-                                f"[数据缺失] {stock_code} 关键列 '{col}' 在所有数据源均缺失，"
-                                f"依赖该列的信号/剔除逻辑将跳过或降级处理"
-                            )
                     return df, fetcher.name
                     
             except Exception as e:
@@ -697,7 +699,9 @@ class DataFetcherManager:
 
 
     
-    # 阶段一：需要从备用源回退补齐的关键列（阶段二会扩展为通用缺失字段策略）
+    # 主源未提供、需从备用源补齐的关键列（当前仅换手率）。
+    # 各 fetcher 出口已归一化为 STANDARD_COLUMNS，故只按标准列名对齐补齐，
+    # 不覆盖主源已有有效数据；补齐后仍整列缺失则告警，交由下游降级/跳过处理。
     _BACKFILL_COLUMNS = ['turnover_rate']
 
     def _backfill_missing_columns(
@@ -709,22 +713,15 @@ class DataFetcherManager:
         days: int,
         primary_name: str,
     ) -> pd.DataFrame:
-        """
-        主源数据缺失关键列时，从其余数据源补齐（按已标准化的 'date' 列对齐）。
-
-        设计前提：各 fetcher 在出口处已把原始字段归一化为 STANDARD_COLUMNS，
-        因此这里只按标准列名操作，无需感知各源原始字段差异。
-        只补「列缺失」或「整列全为 NaN」的情况，不覆盖主源已有的有效数据。
-        """
+        """主源缺失关键列时从其余数据源补齐（按标准化 'date' 列对齐），并告警仍缺失的列。"""
         if primary_df is None or primary_df.empty:
             return primary_df
         for col in self._BACKFILL_COLUMNS:
-            have_col = col in primary_df.columns and not primary_df[col].isna().all()
-            if have_col:
-                continue
+            if col in primary_df.columns and not primary_df[col].isna().all():
+                continue  # 主源已有有效数据，无需补齐
             for fb in self._fetchers:
                 if fb.name == primary_name:
-                    continue
+                    continue  # 不从主源自身补齐
                 try:
                     sub = fb.get_daily_data(
                         stock_code=stock_code,
@@ -732,22 +729,28 @@ class DataFetcherManager:
                         end_date=end_date,
                         days=days,
                     )
-                    if sub is None or sub.empty or col not in sub.columns or sub[col].isna().all():
-                        continue
-                    sub_map = dict(zip(sub['date'], sub[col]))
-                    filled = primary_df['date'].map(sub_map)
-                    if col not in primary_df.columns:
-                        primary_df[col] = filled
-                    else:
-                        mask = primary_df[col].isna()
-                        primary_df.loc[mask, col] = filled[mask].values
-                    logger.info(
-                        f"[列回退] {stock_code} 从 [{fb.name}] 补齐缺失列 '{col}' "
-                        f"(主源 {primary_name} 未提供)"
-                    )
-                    break
                 except Exception as e:
                     logger.debug(f"[列回退] {stock_code} 从 [{fb.name}] 补齐 '{col}' 失败: {e}")
+                    continue
+                if sub is None or sub.empty or col not in sub.columns or sub[col].isna().all():
+                    continue
+                filled = primary_df['date'].map(dict(zip(sub['date'], sub[col])))
+                if col not in primary_df.columns:
+                    primary_df[col] = filled
+                else:
+                    missing = primary_df[col].isna()
+                    primary_df.loc[missing, col] = filled[missing].values
+                logger.info(
+                    f"[列回退] {stock_code} 从 [{fb.name}] 补齐缺失列 '{col}' "
+                    f"(主源 {primary_name} 未提供)"
+                )
+                break
+            # 遍历所有备用源后仍缺失 → 告警，下游降级/跳过处理
+            if col not in primary_df.columns or primary_df[col].isna().all():
+                logger.warning(
+                    f"[数据缺失] {stock_code} 关键列 '{col}' 在所有数据源均缺失，"
+                    f"依赖该列的信号/剔除逻辑将跳过或降级处理"
+                )
         return primary_df
 
     def get_realtime_quote(self, stock_code: str):
@@ -784,44 +787,17 @@ class DataFetcherManager:
 
         # 美股指数由 YfinanceFetcher 处理（在美股股票检查之前）
         if is_us_index_code(stock_code):
-            for fetcher in self._fetchers:
-                if fetcher.name == "YfinanceFetcher":
-                    if hasattr(fetcher, 'get_realtime_quote'):
-                        try:
-                            quote = fetcher.get_realtime_quote(stock_code)
-                            if quote is not None:
-                                logger.info(f"[实时行情] 美股指数 {stock_code} 成功获取 (来源: yfinance)")
-                                return quote
-                        except Exception as e:
-                            logger.warning(f"[实时行情] 美股指数 {stock_code} 获取失败: {e}")
-                    break
-            logger.warning(f"[实时行情] 美股指数 {stock_code} 无可用数据源")
-            return None
+            return self._quote_from_yfinance(stock_code, "美股指数")
 
         # 美股单独处理，使用 YfinanceFetcher
         if _is_us_code(stock_code):
-            for fetcher in self._fetchers:
-                if fetcher.name == "YfinanceFetcher":
-                    if hasattr(fetcher, 'get_realtime_quote'):
-                        try:
-                            quote = fetcher.get_realtime_quote(stock_code)
-                            if quote is not None:
-                                logger.info(f"[实时行情] 美股 {stock_code} 成功获取 (来源: yfinance)")
-                                return quote
-                        except Exception as e:
-                            logger.warning(f"[实时行情] 美股 {stock_code} 获取失败: {e}")
-                    break
-            logger.warning(f"[实时行情] 美股 {stock_code} 无可用数据源")
-            return None
+            return self._quote_from_yfinance(stock_code, "美股")
 
         # 港股实时行情只走港股专用入口，避免按 A 股 source_priority
         # 反复触发同一个 ak.stock_hk_spot_em() 接口。
         if _is_hk_market(stock_code):
-            for fetcher in self._fetchers:
-                if fetcher.name != "AkshareFetcher":
-                    continue
-                if not hasattr(fetcher, 'get_realtime_quote'):
-                    break
+            fetcher = self._fetcher_by_name("AkshareFetcher")
+            if fetcher is not None:
                 try:
                     quote = fetcher.get_realtime_quote(stock_code, source="hk")
                     if quote is not None and quote.has_basic_data():
@@ -829,8 +805,6 @@ class DataFetcherManager:
                         return quote
                 except Exception as e:
                     logger.warning(f"[实时行情] 港股 {stock_code} 获取失败: {e}")
-                break
-
             logger.warning(f"[实时行情] 港股 {stock_code} 无可用数据源")
             return None
         
@@ -841,52 +815,32 @@ class DataFetcherManager:
         # primary_quote holds the first successful result; we may supplement
         # missing fields (volume_ratio, turnover_rate, etc.) from later sources.
         primary_quote = None
-        
+
+        # source 字符串 → (fetcher 类名, 调用参数) 分发表
+        source_specs = {
+            "efinance": ("EfinanceFetcher", {}),
+            "akshare_em": ("AkshareFetcher", {"source": "em"}),
+            "akshare_sina": ("AkshareFetcher", {"source": "sina"}),
+            "tencent": ("AkshareFetcher", {"source": "tencent"}),
+            "akshare_qq": ("AkshareFetcher", {"source": "tencent"}),  # tencent 别名
+            "tushare": ("TushareFetcher", {}),
+        }
+        # _fetchers 延迟加载，映射表每次现建，不缓存
+        fetcher_map = {f.name: f for f in self._fetchers}
+
         for source in source_priority:
             source = source.strip().lower()
-            
+
             try:
-                quote = None
-                
-                if source == "efinance":
-                    # 尝试 EfinanceFetcher
-                    for fetcher in self._fetchers:
-                        if fetcher.name == "EfinanceFetcher":
-                            if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code)
-                            break
-                
-                elif source == "akshare_em":
-                    # 尝试 AkshareFetcher 东财数据源
-                    for fetcher in self._fetchers:
-                        if fetcher.name == "AkshareFetcher":
-                            if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code, source="em")
-                            break
-                
-                elif source == "akshare_sina":
-                    # 尝试 AkshareFetcher 新浪数据源
-                    for fetcher in self._fetchers:
-                        if fetcher.name == "AkshareFetcher":
-                            if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code, source="sina")
-                            break
-                
-                elif source in ("tencent", "akshare_qq"):
-                    # 尝试 AkshareFetcher 腾讯数据源
-                    for fetcher in self._fetchers:
-                        if fetcher.name == "AkshareFetcher":
-                            if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code, source="tencent")
-                            break
-                
-                elif source == "tushare":
-                    # 尝试 TushareFetcher（需要 Tushare Pro 积分）
-                    for fetcher in self._fetchers:
-                        if fetcher.name == "TushareFetcher":
-                            if hasattr(fetcher, 'get_realtime_quote'):
-                                quote = fetcher.get_realtime_quote(stock_code)
-                            break
+                spec = source_specs.get(source)
+                if spec is None:
+                    logger.debug(f"[实时行情] {stock_code} 未知数据源 '{source}'，跳过")
+                    continue
+                fetcher = fetcher_map.get(spec[0])
+                if fetcher is None:
+                    logger.debug(f"[实时行情] {stock_code} 数据源 '{source}' 依赖的 {spec[0]} 未启用，跳过")
+                    continue
+                quote = fetcher.get_realtime_quote(stock_code, **spec[1])
                 
                 if quote is not None and quote.has_basic_data():
                     if primary_quote is None:
@@ -928,6 +882,27 @@ class DataFetcherManager:
         else:
             logger.warning(f"[实时行情] {stock_code} 无可用数据源")
         
+        return None
+
+    def _fetcher_by_name(self, name: str) -> Optional["BaseFetcher"]:
+        """按类名取 fetcher 实例；_fetchers 延迟加载，故每次现查不缓存。"""
+        for fetcher in self._fetchers:
+            if fetcher.name == name:
+                return fetcher
+        return None
+
+    def _quote_from_yfinance(self, stock_code: str, label: str) -> Optional["UnifiedRealtimeQuote"]:
+        """美股/美股指数实时行情：仅 YfinanceFetcher 支持。"""
+        fetcher = self._fetcher_by_name("YfinanceFetcher")
+        if fetcher is not None:
+            try:
+                quote = fetcher.get_realtime_quote(stock_code)
+                if quote is not None:
+                    logger.info(f"[实时行情] {label} {stock_code} 成功获取 (来源: yfinance)")
+                    return quote
+            except Exception as e:
+                logger.warning(f"[实时行情] {label} {stock_code} 获取失败: {e}")
+        logger.warning(f"[实时行情] {label} {stock_code} 无可用数据源")
         return None
 
     # Fields worth supplementing from secondary sources when the primary
