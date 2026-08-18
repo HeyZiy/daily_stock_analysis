@@ -31,6 +31,10 @@ def check_removal_rules(code: str, df: pd.DataFrame) -> Tuple[bool, str]:
     if df is None or len(df) < 2:
         return False, ""
 
+    # 换手率列缺失（数据源未提供）时，依赖换手率的剔除规则将静默跳过，这里显式告警
+    if 'turnover_rate' not in df.columns:
+        logger.warning(f"  {code}: 换手率列缺失，情绪过热/流动性枯竭两条剔除规则已跳过")
+
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 

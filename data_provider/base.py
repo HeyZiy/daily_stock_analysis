@@ -661,6 +661,17 @@ class DataFetcherManager:
                         f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
                         f"rows={len(df)}, elapsed={elapsed:.2f}s"
                     )
+                    # 阶段一：主源缺失关键列时，从其余数据源回退补齐（当前先补换手率）
+                    df = self._backfill_missing_columns(
+                        df, stock_code, start_date, end_date, days, primary_name=fetcher.name
+                    )
+                    # 阶段二：回退后仍缺失的关键列显式告警（避免静默失效）
+                    for col in self._BACKFILL_COLUMNS:
+                        if col not in df.columns or df[col].isna().all():
+                            logger.warning(
+                                f"[数据缺失] {stock_code} 关键列 '{col}' 在所有数据源均缺失，"
+                                f"依赖该列的信号/剔除逻辑将跳过或降级处理"
+                            )
                     return df, fetcher.name
                     
             except Exception as e:
@@ -686,6 +697,59 @@ class DataFetcherManager:
 
 
     
+    # 阶段一：需要从备用源回退补齐的关键列（阶段二会扩展为通用缺失字段策略）
+    _BACKFILL_COLUMNS = ['turnover_rate']
+
+    def _backfill_missing_columns(
+        self,
+        primary_df: pd.DataFrame,
+        stock_code: str,
+        start_date: Optional[str],
+        end_date: Optional[str],
+        days: int,
+        primary_name: str,
+    ) -> pd.DataFrame:
+        """
+        主源数据缺失关键列时，从其余数据源补齐（按已标准化的 'date' 列对齐）。
+
+        设计前提：各 fetcher 在出口处已把原始字段归一化为 STANDARD_COLUMNS，
+        因此这里只按标准列名操作，无需感知各源原始字段差异。
+        只补「列缺失」或「整列全为 NaN」的情况，不覆盖主源已有的有效数据。
+        """
+        if primary_df is None or primary_df.empty:
+            return primary_df
+        for col in self._BACKFILL_COLUMNS:
+            have_col = col in primary_df.columns and not primary_df[col].isna().all()
+            if have_col:
+                continue
+            for fb in self._fetchers:
+                if fb.name == primary_name:
+                    continue
+                try:
+                    sub = fb.get_daily_data(
+                        stock_code=stock_code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        days=days,
+                    )
+                    if sub is None or sub.empty or col not in sub.columns or sub[col].isna().all():
+                        continue
+                    sub_map = dict(zip(sub['date'], sub[col]))
+                    filled = primary_df['date'].map(sub_map)
+                    if col not in primary_df.columns:
+                        primary_df[col] = filled
+                    else:
+                        mask = primary_df[col].isna()
+                        primary_df.loc[mask, col] = filled[mask].values
+                    logger.info(
+                        f"[列回退] {stock_code} 从 [{fb.name}] 补齐缺失列 '{col}' "
+                        f"(主源 {primary_name} 未提供)"
+                    )
+                    break
+                except Exception as e:
+                    logger.debug(f"[列回退] {stock_code} 从 [{fb.name}] 补齐 '{col}' 失败: {e}")
+        return primary_df
+
     def get_realtime_quote(self, stock_code: str):
         """
         获取实时行情数据（自动故障切换）

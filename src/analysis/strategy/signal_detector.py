@@ -217,8 +217,14 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     holds_ma5 = current_price >= ma5 * 0.995  # 允许微破
 
     # 3. 选股池条件：换手率 > 3%（保证活跃度，缩量日允许适当降低）
-    turnover = latest.get('turnover_rate', 0)
-    meets_liquidity = turnover > 3.0
+    #    换手率缺失（数据源未提供）时视为「未知」：跳过该子条件放行并发告警，
+    #    避免「默认0 → 永远挡掉所有信号」的静默黑屏（见 base._BACKFILL_COLUMNS）。
+    _tr = latest.get('turnover_rate')
+    turnover_unknown = _tr is None or pd.isna(_tr)
+    turnover = 0.0 if turnover_unknown else float(_tr)
+    meets_liquidity = True if turnover_unknown else turnover > 3.0
+    if turnover_unknown:
+        logger.warning(f"  {name}({code}): 换手率缺失，流动性子条件跳过（不因此挡单）")
 
     # 4. 非情绪过热检查：排除短期涨幅过大、偏离5日线过远、波动剧烈的标的
     is_euphoric = False
