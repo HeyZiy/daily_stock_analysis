@@ -55,6 +55,17 @@ def filter_held_positions(positions: List[dict], min_count: int = 0) -> List[dic
     return held
 
 
+def filter_stock_positions(positions: List[dict], min_count: int = 0) -> List[dict]:
+    """过滤出当前持仓的 A 股股票（排除 ETF/基金/债券等非股票持仓）。
+
+    趋势策略只对股票持仓输出卖出信号；ETF 持仓由 ETF 系统独立管理。
+    """
+    return [
+        p for p in filter_held_positions(positions, min_count)
+        if is_a_stock_code(p.get("code", ""))
+    ]
+
+
 def position_profit_pct(p: dict) -> float:
     """持仓盈亏百分比；接口缺失时用成本价/现价兜底计算。"""
     pct = p.get("profit_pct")

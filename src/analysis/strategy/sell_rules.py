@@ -292,25 +292,42 @@ def detect_sell_signals(code: str, name: str, df: pd.DataFrame, position: dict,
     )
 
 
-def fetch_sector_pct_map() -> Dict[str, float]:
-    """拉取全量行业板块当日涨跌幅 {板块名: 涨跌幅%}，失败返回空字典。"""
-    try:
-        from data_provider.efinance_fetcher import EfinanceFetcher
+def _df_to_pct_map(df, name_col: str, pct_col: str) -> Dict[str, float]:
+    """把板块行情 DataFrame 转成 {板块名: 涨跌幅%} 字典。"""
+    if df is None or df.empty or name_col not in df.columns or pct_col not in df.columns:
+        return {}
+    result: Dict[str, float] = {}
+    for _, row in df.iterrows():
+        pct = pd.to_numeric(row[pct_col], errors="coerce")
+        if pd.notna(pct):
+            result[str(row[name_col])] = float(pct)
+    return result
 
+
+def fetch_sector_pct_map() -> Dict[str, float]:
+    """拉取全量行业板块当日涨跌幅 {板块名: 涨跌幅%}，失败返回空字典。
+
+    多源回退：akshare 东财全量板块 → akshare 新浪 → efinance（东财实时），
+    单一数据源不稳定不影响整体；全部失败时板块类卖出规则跳过。
+    """
+    from data_provider.akshare_fetcher import AkshareFetcher
+    from data_provider.efinance_fetcher import EfinanceFetcher
+
+    try:
+        result = AkshareFetcher().get_sector_pct_map()
+        if result:
+            return result
+    except Exception:
+        logger.warning("akshare 板块行情获取失败，尝试 efinance", exc_info=True)
+
+    try:
         ef = EfinanceFetcher()
         df = ef.get_sector_quotes()
         if df is None or df.empty:
             return {}
         name_col = "股票名称" if "股票名称" in df.columns else "name"
         pct_col = "涨跌幅" if "涨跌幅" in df.columns else "pct_chg"
-        if name_col not in df.columns or pct_col not in df.columns:
-            return {}
-        result: Dict[str, float] = {}
-        for _, row in df.iterrows():
-            pct = pd.to_numeric(row[pct_col], errors="coerce")
-            if pd.notna(pct):
-                result[str(row[name_col])] = float(pct)
-        return result
+        return _df_to_pct_map(df, name_col, pct_col)
     except Exception:
         logger.warning("板块行情获取失败，板块类卖出规则跳过", exc_info=True)
         return {}

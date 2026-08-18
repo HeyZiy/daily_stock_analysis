@@ -41,8 +41,7 @@ from src.config import setup_env
 from src.notify.service import NotificationService
 from src.mx.service import MXService
 from src.mx.client import MXMoniClient
-from src.mx.position_utils import filter_held_positions, get_last_buy_dates_safe
-from src.etf.config import get_etf_managed_codes
+from src.mx.position_utils import filter_stock_positions, get_last_buy_dates_safe
 from src.analysis.analyzer import StockTrendAnalyzer
 from src.analysis.strategy.removal_rules import check_removal_rules
 from src.analysis.strategy.sell_rules import (
@@ -345,9 +344,10 @@ def _list_self_selected(analyzer: 'SimpleTechnicalAnalyzer') -> int:
 
 def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
                       hard_intercept: bool):
-    """读取妙想模拟仓持仓并检测卖出信号（只出建议，不执行交易）。
+    """读取妙想模拟仓股票持仓并检测卖出信号（只出建议，不执行交易）。
 
-    ETF 持仓由 ETF 系统管理，跳过；卖出信号检测见 sell_rules。
+    仅对股票持仓（代码前缀白名单）输出信号；ETF/基金/债券等非股票持仓
+    由 ETF 系统管理，不参与。卖出信号检测见 sell_rules。
 
     Returns:
         held_rows: [(position, sell_signal 或 None, sector, sector_pct), ...] 股票持仓
@@ -357,16 +357,10 @@ def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
         return []
 
     client = MXMoniClient()
-    positions = filter_held_positions(client.get_positions())
+    positions = filter_stock_positions(client.get_positions())
     if not positions:
-        logger.info("妙想模拟仓当前无持仓")
+        logger.info("妙想模拟仓当前无股票持仓")
         return []
-
-    etf_codes = get_etf_managed_codes()
-    stock_positions = [p for p in positions if p.get("code", "") not in etf_codes]
-    etf_skipped = len(positions) - len(stock_positions)
-    if etf_skipped:
-        logger.info(f"跳过 {etf_skipped} 只 ETF 持仓（由 ETF 系统管理）")
 
     entry_map = get_last_buy_dates_safe(client)
     sector_pct_map = fetch_sector_pct_map()
@@ -374,7 +368,7 @@ def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
         logger.warning("板块行情不可用，板块类卖出规则（板块走弱/主线退潮）跳过")
 
     held_rows = []
-    for p in stock_positions:
+    for p in positions:
         code = canonical_stock_code(p.get("code", ""))
         name = p.get("name", "") or code
         sector = analyzer._fetch_stock_sector(code)
@@ -394,7 +388,7 @@ def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
 
         if sig:
             action_label = "🔴 清仓" if sig.action == "clear" else "🟠 减仓50%"
-            logger.warning(f"{action_label} {name}({code}): {'；'.join(sig.reasons)}")
+            logger.info(f"{action_label} {name}({code}): {'；'.join(sig.reasons)}")
         elif df is None:
             logger.warning(f"    {name}({code}) 行情获取失败，无法检测卖出信号")
         else:

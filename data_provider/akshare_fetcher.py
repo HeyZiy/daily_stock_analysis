@@ -1772,6 +1772,51 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
 
+    def get_sector_pct_map(self) -> Dict[str, float]:
+        """获取全量行业板块当日涨跌幅 {板块名: 涨跌幅%}。
+
+        数据源优先级：
+        1. 新浪接口 (ak.stock_sector_spot) —— 主机稳定，默认优先
+        2. 东财接口 (ak.stock_board_industry_name_em) —— 板块名与个股所属板块同口径
+        全部失败返回空字典，板块类规则由调用方跳过。
+        """
+        import akshare as ak
+
+        def _to_map(df: pd.DataFrame, name_col: str, pct_col: str) -> Dict[str, float]:
+            if df is None or df.empty or name_col not in df.columns or pct_col not in df.columns:
+                return {}
+            result: Dict[str, float] = {}
+            for _, row in df.iterrows():
+                pct = pd.to_numeric(row[pct_col], errors="coerce")
+                if pd.notna(pct):
+                    result[str(row[name_col])] = float(pct)
+            return result
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_sector_spot() 获取全量板块行情(新浪)...")
+            df = ak.stock_sector_spot(indicator='行业')
+            result = _to_map(df, '板块', '涨跌幅')
+            if result:
+                return result
+
+        except Exception as e:
+            logger.warning(f"[Akshare] 新浪接口获取板块行情失败: {e}，尝试东财接口")
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_board_industry_name_em() 获取全量板块行情...")
+            df = ak.stock_board_industry_name_em()
+            return _to_map(df, '板块名称', '涨跌幅')
+
+        except Exception as e:
+            logger.error(f"[Akshare] 东财接口获取板块行情也失败: {e}")
+            return {}
+
 
 if __name__ == "__main__":
     # 测试代码
