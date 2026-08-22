@@ -79,6 +79,9 @@ class AmazingDataFetcher(BaseFetcher):
     # 未配置凭证时不注册。失败时由 DataFetcherManager 自动切换到下一数据源
     priority = int(os.getenv("AMAZINGDATA_PRIORITY", "-2"))
 
+    # query_kline 不返回换手率，列回退时直接跳过本源，不发无效请求
+    SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg'}
+
     # 登录单例
     _login_lock = threading.Lock()
     _login_attempted = False

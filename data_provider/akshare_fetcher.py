@@ -266,6 +266,8 @@ class AkshareFetcher(BaseFetcher):
     name = "AkshareFetcher"
     # 提升为最高优先级（有新浪财经作为备选，更稳定）
     priority = int(os.getenv("AKSHARE_PRIORITY", "0"))
+    # 东财/新浪日线均含换手率列
+    SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate'}
     
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         """

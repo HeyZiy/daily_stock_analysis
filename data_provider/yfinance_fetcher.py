@@ -73,6 +73,8 @@ class YfinanceFetcher(BaseFetcher):
 
     name = "YfinanceFetcher"
     priority = int(os.getenv("YFINANCE_PRIORITY", "4"))
+    # Yahoo 日线不提供 A 股换手率，列回退时跳过本源
+    SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg'}
 
     def __init__(self):
         """初始化 YfinanceFetcher"""

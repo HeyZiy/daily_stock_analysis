@@ -246,6 +246,11 @@ class BaseFetcher(ABC):
     
     name: str = "BaseFetcher"
     priority: int = 99  # 优先级数字越小越优先
+
+    # 能力声明：本数据源「日线接口确实提供」的标准列。
+    # None = 未声明（视为可能提供所有标准列，保持向后兼容）；
+    # 列回退 (_backfill_missing_columns) 会先按此过滤，跳过确定没有该列的源，避免无效请求。
+    SUPPORTS_COLUMNS: Optional[set] = None
     
     @abstractmethod
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -702,6 +707,7 @@ class DataFetcherManager:
     # 主源未提供、需从备用源补齐的关键列（当前仅换手率）。
     # 各 fetcher 出口已归一化为 STANDARD_COLUMNS，故只按标准列名对齐补齐，
     # 不覆盖主源已有有效数据；补齐后仍整列缺失则告警，交由下游降级/跳过处理。
+    # 回退前先按各源的 SUPPORTS_COLUMNS 能力声明过滤，跳过日线接口确定没有该列的源。
     _BACKFILL_COLUMNS = ['turnover_rate']
 
     def _backfill_missing_columns(
@@ -722,6 +728,11 @@ class DataFetcherManager:
             for fb in self._fetchers:
                 if fb.name == primary_name:
                     continue  # 不从主源自身补齐
+                if fb.SUPPORTS_COLUMNS is not None and col not in fb.SUPPORTS_COLUMNS:
+                    logger.debug(
+                        f"[列回退] {stock_code} 跳过 [{fb.name}]：其日线接口不提供 '{col}'"
+                    )
+                    continue  # 该源确定没有此列，不发无效请求
                 try:
                     sub = fb.get_daily_data(
                         stock_code=stock_code,

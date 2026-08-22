@@ -302,6 +302,8 @@ class EfinanceFetcher(BaseFetcher):
     name = "EfinanceFetcher"
     # 降低优先级，让 AkshareFetcher 优先（Akshare 更稳定，支持新浪财经备选）
     priority = int(os.getenv("EFINANCE_PRIORITY", "1"))
+    # 东财 K 线含换手率列
+    SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate'}
     
     def __init__(self, sleep_min: float = 1.5, sleep_max: float = 3.0):
         """

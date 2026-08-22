@@ -67,6 +67,8 @@ class BaostockFetcher(BaseFetcher):
     
     name = "BaostockFetcher"
     priority = int(os.getenv("BAOSTOCK_PRIORITY", "3"))
+    # query_history_k_data_plus 请求了 turn 字段，可提供换手率
+    SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate'}
     
     def __init__(self):
         """初始化 BaostockFetcher"""
@@ -209,7 +211,7 @@ class BaostockFetcher(BaseFetcher):
                 # adjustflag: 1-后复权，2-前复权，3-不复权
                 rs = bs.query_history_k_data_plus(
                     code=bs_code,
-                    fields="date,open,high,low,close,volume,amount,pctChg",
+                    fields="date,open,high,low,close,volume,amount,pctChg,turn",
                     start_date=start_date,
                     end_date=end_date,
                     frequency="d",  # 日线
@@ -241,22 +243,23 @@ class BaostockFetcher(BaseFetcher):
         标准化 Baostock 数据
         
         Baostock 返回的列名：
-        date, open, high, low, close, volume, amount, pctChg
+        date, open, high, low, close, volume, amount, pctChg, turn
         
         需要映射到标准列名：
-        date, open, high, low, close, volume, amount, pct_chg
+        date, open, high, low, close, volume, amount, pct_chg, turnover_rate
         """
         df = df.copy()
         
-        # 列名映射（只需要处理 pctChg）
+        # 列名映射（pctChg→涨跌幅，turn→换手率%，单位与 turnover_rate 一致）
         column_mapping = {
             'pctChg': 'pct_chg',
+            'turn': 'turnover_rate',
         }
         
         df = df.rename(columns=column_mapping)
         
         # 数值类型转换（Baostock 返回的都是字符串）
-        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')

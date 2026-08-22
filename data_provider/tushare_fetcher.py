@@ -91,6 +91,8 @@ class TushareFetcher(BaseFetcher):
     
     name = "TushareFetcher"
     priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
+    # daily/fund_daily 接口不返回换手率（换手率在 daily_basic，未接入），列回退时跳过本源
+    SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg'}
 
     def __init__(self, rate_limit_per_minute: int = 80):
         """
