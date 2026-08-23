@@ -5,7 +5,7 @@
 四项规则：
 1. 连续2天收盘跌破10日线
 2. 放量长阴破趋势（单日跌幅>=5% 且 量比>=2）
-3. 情绪过热（近5日换手均值 > 近20日均值 * 2，且20日均值>1%避免低基数误触发）
+3. 情绪过热（近5日换手均值 > 5% 且 > 近20日均值 * 2，双条件 AND 避免低基数比值虚高误杀）
 4. 5日平均换手过低且无活跃换手
 """
 
@@ -60,12 +60,14 @@ def check_removal_rules(code: str, df: pd.DataFrame) -> Tuple[bool, str]:
             close < ma10):
             return True, f"放量长阴破趋势（跌幅{pct_change:.1f}%，量比{volume_ratio:.1f}）"
 
-    # 规则3：情绪过热（近5日换手均值 > 近20日均值的2倍）
+    # 规则3：情绪过热（近5日换手均值 > 5% 且 > 近20日均值的2倍）
+    #    双条件 AND：绝对值 >5% 保证真实过热，比值 >=2 倍保证是骤然放量；
+    #    只看比值会在低基数下虚高误杀（如 3.8%/1.5%=2.5 倍，换手本身并不高）
     if 'turnover_rate' in df.columns and len(df) >= 20:
         r5  = df['turnover_rate'].iloc[-5:].mean()
         r20 = df['turnover_rate'].iloc[-20:].mean()
-        if (pd.notna(r5) and pd.notna(r20) and r20 > 1.0 and r5 > r20 * 2.0):
-            return True, f"情绪过热（近5日换手{r5:.1f}% 是近20日均{r20:.1f}%的{r5/r20:.1f}倍）"
+        if (pd.notna(r5) and pd.notna(r20) and r20 > 0 and r5 > 5.0 and r5 >= r20 * 2.0):
+            return True, f"情绪过热（近5日换手{r5:.1f}%>5% 且是近20日均{r20:.1f}%的{r5/r20:.1f}倍）"
 
     # 规则4：5日平均换手过低，且无单日活跃换手
     if 'turnover_rate' in df.columns and len(df) >= 5:
