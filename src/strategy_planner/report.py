@@ -110,21 +110,20 @@ def generate_report(analysis: Dict[str, Any], data_text: str = "", todo_summary:
     lines.append("## 四、实现检查（Agent 2）")
     lines.append("")
     if impl_results:
+        status_labels = {
+            "implemented": "✅ 已有实现",
+            "todo_pool": "📋 已加入待办库（池内已登记，缺代码实现）",
+            "todo_new": "📋 已加入待办库（全新策略）",
+            "error": "⚠️ 池内对账失败，本次未登记",
+        }
         for r in impl_results:
             name = r.get("strategy", "")
-            if r.get("implemented"):
-                status = "✅ 已有实现"
-            elif r.get("added_to_todo"):
-                status = "📋 已加入待办库"
-                if r.get("documented"):
-                    status += "（策略文档已定义，缺代码实现）"
-                else:
-                    status += "（全新策略）"
-            else:
-                status = "⚪ 跳过"
+            status = status_labels.get(r.get("status", ""), "⚪ 跳过")
             lines.append(f"- **{status}**: {name}")
             if r.get("evidence"):
                 lines.append(f"  - {r['evidence']}")
+            if r.get("match_basis"):
+                lines.append(f"  - 匹配依据: {r['match_basis']}")
         lines.append("")
         if todo_summary:
             lines.append("### 策略待办库")

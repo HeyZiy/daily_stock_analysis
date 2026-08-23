@@ -17,7 +17,6 @@
     python strategy_planner.py                    # 正常运行
     python strategy_planner.py --debug            # 调试模式
     python strategy_planner.py --no-notify        # 不发送通知
-    python strategy_planner.py --no-llm           # 跳过 LLM 分析，仅采集数据
 """
 import argparse
 import logging
@@ -76,7 +75,6 @@ def main():
     parser = argparse.ArgumentParser(description="策略规划器 — 根据市场状态规划策略配置")
     parser.add_argument("--debug", action="store_true", help="调试模式")
     parser.add_argument("--no-notify", action="store_true", help="不发送通知")
-    parser.add_argument("--no-llm", action="store_true", help="跳过LLM分析，仅采集并打印数据")
     parser.add_argument("--list-strategies", action="store_true", help="列出当前策略池")
     parser.add_argument("--list-pending", action="store_true", help="列出待审批策略")
     parser.add_argument("--approve", type=str, metavar="STRATEGY_ID", help="批准指定策略")
@@ -140,13 +138,6 @@ def main():
     data_text = format_data_for_llm(market_data)
     logger.info(f"数据采集完成，已获取 {len(market_data)} 个数据类别")
 
-    if args.no_llm:
-        print("\n" + "="*60)
-        print(data_text)
-        print("="*60)
-        print("\n--no-llm 已指定，跳过 LLM 分析。")
-        return
-
     # 原样记录 LLM 输入 + 发送输入通知（在调 LLM 之前）
     _save_llm_input(data_text)
     if not args.no_notify:
@@ -161,7 +152,6 @@ def main():
     if not client.available:
         logger.error("LLM 不可用！请检查 DEEPSEEK_API_KEY 或 LLM_CHANNELS 配置")
         print("\n❌ 错误: LLM 不可用。请设置 DEEPSEEK_API_KEY 环境变量或配置 LLM_CHANNELS。")
-        print("   你可以使用 --no-llm 跳过 LLM 分析仅查看数据。")
         sys.exit(1)
 
     diagnosis = run_market_diagnosis(data_text)
@@ -176,30 +166,22 @@ def main():
     if recommended:
         print(f"   最推荐策略: {recommended.get('name', 'N/A')}")
 
-    # ── Agent 2: 推荐策略实现检查 ──
-    print("[3/4] Agent 2: 推荐策略实现检查...")
-    from src.strategy_planner.implementation_checker import ensure_strategy_implementation, list_todo_summary
+    # ── Agent 2: 推荐策略与策略池对账（LLM + 注册表）──
+    print("[3/4] Agent 2: 推荐策略池内对账...")
+    from src.strategy_planner.implementation_checker import check_implementations, list_todo_summary
 
-    impl_results = []
+    # 只检查推荐策略 + 高适配候选（fit >= 60）
     recommended_name = recommended.get("name", "")
-    for cand in candidates:
-        # 只检查推荐策略 + 高适配候选（fit >= 60）
-        if cand.get("name") == recommended_name or cand.get("fit_score", 0) >= 60:
-            check = ensure_strategy_implementation({
-                "name": cand.get("name", ""),
-                "category": cand.get("category", "其他"),
-                "description": cand.get("description", ""),
-                "why_now": cand.get("reason", ""),
-                "market_phase": diagnosis.get("phase", ""),
-            })
-            impl_results.append({"strategy": cand.get("name", ""), **check})
-            if check["implemented"]:
-                status = "✅ 已有实现"
-            elif check["added_to_todo"]:
-                status = "📋 已加入待办" + ("（文档已定义，缺实现）" if check.get("documented") else "")
-            else:
-                status = "⚪ 跳过"
-            print(f"   {status}: {cand.get('name', '')}")
+    selected = [c for c in candidates if c.get("name") == recommended_name or c.get("fit_score", 0) >= 60]
+    impl_results = check_implementations(selected, market_phase=diagnosis.get("phase", "")) if selected else []
+    status_labels = {
+        "implemented": "✅ 已有实现",
+        "todo_pool": "📋 已加入待办（池内已登记，未实现）",
+        "todo_new": "📋 已加入待办（全新策略）",
+        "error": "⚠️ 对账失败",
+    }
+    for r in impl_results:
+        print(f"   {status_labels.get(r.get('status'), '⚪ 未知')}: {r.get('strategy', '')}")
 
     # Step 4: 生成报告
     print("[4/4] 生成市场报告...")

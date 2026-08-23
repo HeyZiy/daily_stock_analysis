@@ -124,20 +124,29 @@ def collect_index_performance(lookback_days: int = 30) -> Dict[str, Any]:
 
         result[name] = info
 
-    # 港股（AmazingData 不支持港股指数，akshare 直连 + 失败标注）
+    # 港股（em 源优先，sina 源兜底，均失败标注；涨幅不足窗口返回 N/A 而非假 0.00%）
+    def _ret_txt(close, days: int) -> str:
+        """收盘序列最近 days 个交易日的涨跌幅文本；数据不足返回 N/A。"""
+        if len(close) < days + 1:
+            return "N/A"
+        return f"{float((close[-1] - close[-days - 1]) / close[-days - 1] * 100):.2f}%"
+
     try:
         import akshare as ak
-        hsi = ak.stock_hk_index_daily_em(symbol="HSI")
+        hsi = None
+        try:
+            hsi = ak.stock_hk_index_daily_em(symbol="HSI")
+        except Exception as e:
+            logger.debug(f"恒生指数 em 源失败，转 sina: {e}")
+        if hsi is None or len(hsi) < 5:
+            hsi = ak.stock_hk_index_daily_sina(symbol="HSI")
         if hsi is not None and len(hsi) >= 5:
             hsi = hsi.sort_values("date").reset_index(drop=True)
             close = hsi["close"].values
             result["恒生指数"] = {
                 "latest_close": float(close[-1]),
                 "latest_date": str(hsi["date"].values[-1]),
-                "returns": {
-                    "周": f"{float((close[-1] - close[-6]) / close[-6] * 100) if len(close) >= 6 else 0:.2f}%",
-                    "月": f"{float((close[-1] - close[-21]) / close[-21] * 100) if len(close) >= 21 else 0:.2f}%",
-                },
+                "returns": {"周": _ret_txt(close, 5), "月": _ret_txt(close, 21)},
             }
         else:
             result["恒生指数"] = {"error": "数据不可用"}
@@ -145,27 +154,35 @@ def collect_index_performance(lookback_days: int = 30) -> Dict[str, Any]:
         logger.warning(f"获取恒生指数失败: {e}")
         result["恒生指数"] = {"error": "数据不可用"}
 
-    # 美股（yfinance，失败标注）
-    try:
-        import yfinance as yf
-        for name, ticker in [("标普500", "^GSPC"), ("纳斯达克", "^IXIC")]:
+    # 美股（yfinance 优先，akshare 新浪源兜底，均失败标注；涨幅不足窗口返回 N/A）
+    for name, ticker, sina_sym in [("标普500", "^GSPC", ".INX"), ("纳斯达克", "^IXIC", ".IXIC")]:
+        close, latest_date = None, None
+        try:
+            import yfinance as yf
             sp = yf.download(ticker, period="1mo", progress=False)
             if sp is not None and len(sp) >= 5:
-                close = sp["Close"].values
-                result[name] = {
-                    "latest_close": float(close[-1]),
-                    "returns": {
-                        "周": f"{float((close[-1] - close[-6]) / close[-6] * 100) if len(close) >= 6 else 0:.2f}%",
-                        "月": f"{float((close[-1] - close[-21]) / close[-21] * 100) if len(close) >= 21 else 0:.2f}%",
-                    },
-                }
-            else:
-                result[name] = {"error": "数据不可用"}
-    except Exception as e:
-        logger.warning(f"获取美股指数失败: {e}")
-        for name in ["标普500", "纳斯达克"]:
-            if name not in result:
-                result[name] = {"error": "数据不可用"}
+                close = sp["Close"].values.flatten()
+                latest_date = str(sp.index[-1].date())
+        except Exception as e:
+            logger.debug(f"美股 {name} yfinance 失败，转 akshare 新浪源: {e}")
+        if close is None:
+            try:
+                import akshare as ak
+                sp = ak.index_us_stock_sina(symbol=sina_sym)
+                if sp is not None and len(sp) >= 5:
+                    sp = sp.tail(30).reset_index(drop=True)
+                    close = sp["close"].values.astype(float)
+                    latest_date = str(sp["date"].values[-1])
+            except Exception as e:
+                logger.warning(f"获取美股指数 {name} 失败: {e}")
+        if close is not None and len(close) >= 5:
+            result[name] = {
+                "latest_close": float(close[-1]),
+                "latest_date": latest_date,
+                "returns": {"周": _ret_txt(close, 5), "月": _ret_txt(close, 21)},
+            }
+        else:
+            result[name] = {"error": "数据不可用"}
 
     return result
 
@@ -511,7 +528,7 @@ def format_data_for_llm(data: Dict[str, Any]) -> str:
             extra = f" | PE分位: {s['pe_pct']} | 市值分位: {s['cap_pct']}" if "pe_pct" in s else ""
             lines.append(f"- 🟢 TOP{i}: {s['name']} ({s['week_return']}){extra}")
         lines.append("  ...")
-        for i, s in enumerate(bottom5, len(bottom5)):
+        for i, s in enumerate(bottom5, 1):
             extra = f" | PE分位: {s['pe_pct']} | 市值分位: {s['cap_pct']}" if "pe_pct" in s else ""
             lines.append(f"- 🔴 BOTTOM{i}: {s['name']} ({s['week_return']}){extra}")
     else:

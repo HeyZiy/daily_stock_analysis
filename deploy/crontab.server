@@ -34,5 +34,9 @@
 # ── ETF 周度观察 + 自动调仓：每周一 9:35（开盘后，妙想市价单可成交）──
 35 9 * * 1 cd /srv/regime-trader && flock -n /tmp/etf.lock ./.venv/bin/python etf_observe.py --execute > /dev/null 2>> logs/cron_error.log
 
-# ── 策略规划器（双 Agent + LLM 自进化）：每周六 9:00 ──
-0 9 * * 6 cd /srv/regime-trader && flock -n /tmp/planner.lock ./.venv/bin/python strategy_planner.py > /dev/null 2>> logs/cron_error.log
+# ── 策略规划器（双 Agent + LLM 自进化）：已停用 2026-08-23（产出与初衷不符，代码留档复用）──
+# 0 9 * * 6 cd /srv/regime-trader && flock -n /tmp/planner.lock ./.venv/bin/python strategy_planner.py > /dev/null 2>> logs/cron_error.log
+
+# ── 风格状态周报（纯规则，无 LLM）：每周六 9:00 ──
+# 回测验证标签质量后再启用（启用时删除行首 #）：
+# 0 9 * * 6 cd /srv/regime-trader && flock -n /tmp/style.lock ./.venv/bin/python style_report.py > /dev/null 2>> logs/cron_error.log

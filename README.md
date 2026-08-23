@@ -45,7 +45,8 @@ pip install wheels/AmazingData-1.1.9-cp314-none-any.whl wheels/tgw-1.0.9.2-py3-n
 # 4. 运行
 python trend_analysis.py          # 趋势日度分析
 python etf_observe.py             # ETF 周度观察（--execute 才下单）
-python strategy_planner.py        # 策略规划（--no-llm 跳过 LLM）
+python style_report.py            # 风格状态周报（纯规则，无 LLM）
+python strategy_planner.py        # 策略规划（需 LLM）
 ```
 
 主要环境变量（`.env`）：

@@ -23,6 +23,9 @@ MIN_MAX_BYTES = 40
 _SPECIAL_CHAR_RANGE = (0x10000, 0xFFFFF)
 _SPECIAL_CHAR_REGEX = re.compile(r'[\U00010000-\U000FFFFF]')
 
+# <br> 换行标签（飞书纯文本不渲染 HTML，统一转 " / "）
+_BR_TAG_RE = re.compile(r"\s*<br\s*/?>\s*")
+
 
 def _page_marker(i: int, total: int) -> str:
     return f"{PAGE_MARKER_PREFIX} {i+1}/{total}"
@@ -428,8 +431,8 @@ def format_feishu_markdown(content: str) -> str:
             return
 
         def _parse_row(row: str) -> List[str]:
-            """解析表格行，提取单元格"""
-            cells = [c.strip() for c in row.strip().strip('|').split('|')]
+            """解析表格行，提取单元格（<br> 换行标签转 ' / '，飞书纯文本不渲染 HTML）"""
+            cells = [_BR_TAG_RE.sub(" / ", c).strip() for c in row.strip().strip('|').split('|')]
             return [c for c in cells if c]
 
         rows = []
@@ -483,6 +486,10 @@ def format_feishu_markdown(content: str) -> str:
         # 转换列表项
         elif line.startswith('- '):
             line = f"• {line[2:].strip()}"
+
+        # 残留的 <br> 标签转 ' / '（飞书纯文本不渲染 HTML）
+        if "<br" in line:
+            line = _BR_TAG_RE.sub(" / ", line)
 
         lines.append(line)
 

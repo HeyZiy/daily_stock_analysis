@@ -3,11 +3,14 @@
 ## Architecture
 
 ```
-strategy_planner.py  → 双 Agent 策略规划器：Agent1 市场诊断+从零提议策略+推荐；
-                       Agent2 检查推荐策略是否有实现，无则进待办库
+strategy_planner.py  → 双 Agent 策略规划器【已停用 2026-08-23，代码留档】：Agent1 市场诊断+从零提议策略；
+                       Agent2 LLM 对账策略池注册表（已实现/未实现/全新），无实现进待办库
+style_report.py     → 风格状态周报（纯规则，无 LLM）：周度判定 主线强势期/退潮期/真空期/形成中 + 主导风格，
+                       落盘 data/style_state.json；--backtest 历史回放验证标签
 
-src/strategy_planner/           ← 策略规划器（数据采集 + 双 Agent 分析 + 实现检查 + 报告）
+src/strategy_planner/           ← 策略规划器（已停用；数据采集 + 双 Agent 分析 + 实现检查 + 报告）
 src/analysis/market_gate.py     ← 趋势策略市场门控（硬拦截 + 4项条件 + 5级状态）
+src/analysis/style_state.py     ← 风格状态判定（取数 + 指标 + 状态机 + 周报生成）
 src/analysis/report.py          ← Markdown 日报生成
 src/analysis/strategy/          ← 信号检测(signal_detector.py)、剔除规则(removal_rules.py)、
                                    卖出信号(sell_rules.py，读妙想持仓输出减仓/清仓建议)
@@ -26,12 +29,14 @@ data/etf_industry_map.json      ← 行业 ETF 清单（申万行业 → 首选/
 ## Commands
 
 ```bash
-# 策略规划器（每周六 9:00）
-python strategy_planner.py                    # 市场诊断 + 策略适配 + 自进化
-python strategy_planner.py --no-llm           # 只看采集的数据，跳过 LLM
+# 策略规划器【已停用，代码留档】
 python strategy_planner.py --list-strategies  # 查看策略池
 python strategy_planner.py --list-pending     # 查看待审批策略
 python strategy_planner.py --approve ID       # 批准新策略（--remove ID 移除）
+
+# 风格状态周报（纯规则，无 LLM；cron 暂未启用）
+python style_report.py                    # 周报：风格状态 + 主线明细 + 风格指标 + 门控环境
+python style_report.py --backtest 2021-01-01  # 历史回放状态时间线（不落盘不通知）
 
 # 趋势交易（每交易日 15:10 收盘后）
 python trend_analysis.py                    # 日度分析（买入信号 + 持仓卖出信号；先松筛补充自选池再分析）

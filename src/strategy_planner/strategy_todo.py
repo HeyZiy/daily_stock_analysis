@@ -59,12 +59,15 @@ def get_todos(status: Optional[str] = None) -> List[dict]:
 
 
 def add_todo(strategy: dict) -> dict:
-    """登记一个新待办策略（按名称去重）"""
+    """登记一个新待办策略（按名称或池内 registry_id 去重）"""
     data = _load_todos()
     todos = data.setdefault("todos", [])
     name = strategy.get("name", "")
+    registry_id = strategy.get("registry_id")
     for t in todos:
-        if t.get("name") == name and t.get("status") == "todo":
+        if t.get("status") != "todo":
+            continue
+        if t.get("name") == name or (registry_id and t.get("registry_id") == registry_id):
             return t  # 已在待办，不重复登记
 
     strategy.setdefault("id", f"todo_{date.today().isoformat()}_{len(todos)}")

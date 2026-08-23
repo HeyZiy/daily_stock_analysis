@@ -1,0 +1,39 @@
+{
+  "updated": "2026-08-23",
+  "data_date": "2026-08-21",
+  "state": "forming",
+  "state_streak": 1,
+  "strong_cand_streak": 0,
+  "vacuum_cand_streak": 0,
+  "prev_top5": [
+    "综合",
+    "有色金属",
+    "社会服务",
+    "纺织服饰",
+    "传媒"
+  ],
+  "history": [
+    {
+      "date": "2026-08-21",
+      "state": "forming",
+      "state_streak": 1,
+      "strong_cand_streak": 0,
+      "vacuum_cand_streak": 0,
+      "prev_top5": [],
+      "dominant": "消费医药 · 小盘占优",
+      "spread": 5.71,
+      "retention": null,
+      "top5_ret5": -1.71,
+      "size20": 9.32,
+      "size60": -5.98,
+      "breadth": 0.613,
+      "top5": [
+        "综合",
+        "有色金属",
+        "社会服务",
+        "纺织服饰",
+        "传媒"
+      ]
+    }
+  ]
+}
