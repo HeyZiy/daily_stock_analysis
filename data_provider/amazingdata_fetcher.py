@@ -23,6 +23,7 @@ import os
 import threading
 from typing import Optional, Dict, Any, List
 
+import numpy as np
 import pandas as pd
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, normalize_stock_code
@@ -64,6 +65,14 @@ def _code_to_tgw_format(code: str) -> str:
     if code.startswith(("0", "3", "15", "16", "18")):
         return f"{code}.SZ"
     return None  # 北交所等其他市场暂不支持
+
+
+# InfoData（get_equity_structure 等）本地缓存目录，固定放项目 data/amazingdata_local
+AMAZINGDATA_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "amazingdata_local",
+)
 
 
 class AmazingDataFetcher(BaseFetcher):
@@ -196,7 +205,7 @@ class AmazingDataFetcher(BaseFetcher):
         标准化 AmazingData 数据。
 
         AmazingData 列：code, kline_time, open, high, low, close, volume, amount
-        映射到：date, open, high, low, close, volume, amount, pct_chg
+        映射到：date, open, high, low, close, volume, amount, pct_chg, turnover_rate
         """
         df = df.copy()
         df = df.rename(columns={"kline_time": "date"})
@@ -209,10 +218,117 @@ class AmazingDataFetcher(BaseFetcher):
         # 计算涨跌幅（数据源不直接提供）
         df["pct_chg"] = df["close"].pct_change() * 100
 
+        # 自行计算换手率（volume ÷ 流通股本），避免主源缺失时回退到其他数据源二次拉取。
+        # 计算失败不影响主流程，缺失列仍由 DataFetcherManager 的列回退兜底。
+        try:
+            tor = self._compute_turnover_rate(df, stock_code)
+            if tor is not None:
+                df["turnover_rate"] = tor
+        except Exception as e:
+            logger.warning(f"[AmazingData] {stock_code} 换手率计算失败，将依赖回退源补齐: {e}")
+
         # 只保留需要的列
         keep_cols = ["date"] + [c for c in STANDARD_COLUMNS if c != "date"]
         existing_cols = [c for c in keep_cols if c in df.columns]
         return df[existing_cols]
+
+    # 流通股本（万股）会话级缓存：key = tgw 代码，value = 按变动日索引的 Series
+    _float_shares_cache: "dict" = {}
+
+    def _fetch_float_shares_series(self, tgw_code: str, begin: int, end: int) -> Optional[pd.Series]:
+        """
+        获取个股流通A股（万股）的「变动日 → 万股」序列，用于按交易日 ffill。
+
+        数据源：InfoData.get_equity_structure 的 FLOAT_A_SHARE（流通A股，单位万股）。
+        股本仅在解禁/增发/送转等变动日更新，故需按变动日 ffill 到每个交易日。
+        会话内按代码缓存，避免重复请求。
+        """
+        if tgw_code in self._float_shares_cache:
+            return self._float_shares_cache[tgw_code]
+
+        info = self.get_info_data()
+        os.makedirs(AMAZINGDATA_CACHE_DIR, exist_ok=True)
+        eq = info.get_equity_structure(
+            [tgw_code],
+            local_path=AMAZINGDATA_CACHE_DIR,
+            is_local=True,
+            begin_date=begin,
+            end_date=end,
+        )
+        if eq is None or eq.empty or "FLOAT_A_SHARE" not in eq.columns:
+            return None
+
+        eq = eq.copy()
+        eq["CHANGE_DATE"] = pd.to_datetime(eq["CHANGE_DATE"], errors="coerce")
+        eq = eq.dropna(subset=["CHANGE_DATE", "FLOAT_A_SHARE"])
+        if eq.empty:
+            return None
+        # 同一变动日可能有多行，取最后一条；按变动日排序
+        eq = eq.sort_values("CHANGE_DATE").drop_duplicates("CHANGE_DATE", keep="last")
+        series = eq.set_index("CHANGE_DATE")["FLOAT_A_SHARE"].sort_index()
+        self._float_shares_cache[tgw_code] = series
+        return series
+
+    def _compute_turnover_rate(self, df: pd.DataFrame, stock_code: str) -> Optional[pd.Series]:
+        """
+        计算官方口径换手率（%）= 成交量(股) ÷ 流通股本(股) × 100。
+
+        关键处理：
+        1. 单位自校准：AmazingData K线 volume 单位（股/手）文档未明确，用「成交额 ÷ 流通市值」
+           这一单位无关的中位比值做交叉校验，自动识别手→股（×100），杜绝 100× 静默错误。
+        2. 流通股本按股本结构变动日 ffill 到每个交易日（解禁/增发导致阶跃）。
+        3. 仅支持沪深 A 股/ETF（需能映射 tgw 代码且能取到股本结构）。
+        """
+        if not {"volume", "close", "amount"}.issubset(df.columns):
+            return None
+
+        tgw_code = _code_to_tgw_format(stock_code)
+        if tgw_code is None:
+            return None
+
+        begin = int(pd.to_datetime(df["date"].min()).strftime("%Y%m%d"))
+        end = int(pd.to_datetime(df["date"].max()).strftime("%Y%m%d"))
+
+        float_wan = self._fetch_float_shares_series(tgw_code, begin, end)
+        if float_wan is None:
+            return None
+
+        # 股本（万股）→ 股，按变动日 ffill 到每个交易日（取该日之前最近一次股本结构）
+        idx = pd.to_datetime(df["date"])
+        float_shares = float_wan.reindex(idx, method="ffill").bfill() * 1e4  # 万股 -> 股
+        # 按位置对齐到 df 行索引（df 的 volume/close/amount 用默认 RangeIndex，
+        # 而 reindex 后是日期值索引，直接相除会因索引不对齐全部变 NaN）
+        float_shares = pd.Series(float_shares.values, index=df.index)
+        float_shares = float_shares.replace(0, pd.NA)
+        if float_shares.isna().all():
+            return None
+
+        volume = pd.to_numeric(df["volume"], errors="coerce")
+        close = pd.to_numeric(df["close"], errors="coerce")
+        amount = pd.to_numeric(df["amount"], errors="coerce")
+
+        # 单位无关参考值：换手率 ≈ 成交额 ÷ 流通市值（元/元，无量纲）
+        tor_amt = (amount / (close * float_shares)).replace([pd.NA, 0], pd.NA)
+        tor_vol_raw = (volume / float_shares).replace([pd.NA, 0], pd.NA)
+
+        # 比值 median ≈ 1 → volume 单位为股；≈0.01 → 单位为手（需 ×100）
+        ratio = (tor_vol_raw / tor_amt).replace([pd.NA, np.inf, -np.inf], pd.NA).dropna()
+        unit_factor = 1.0
+        if not ratio.empty:
+            med = float(ratio.median())
+            if med < 0.2:  # 约 0.01，手
+                unit_factor = 100.0
+                logger.info(f"[AmazingData] {stock_code} 检测到 K线 volume 单位为'手'，换手率计算已×100 转股")
+            elif med > 5:  # 约 100，百股或其他异常，退回金额法
+                logger.warning(
+                    f"[AmazingData] {stock_code} volume/流通股本 比值异常(median={med:.3f})，"
+                    f"换手率改用成交额÷流通市值估算"
+                )
+                tor = (tor_amt * 100).round(4)
+                return tor
+
+        tor = (volume * unit_factor / float_shares * 100).round(4)
+        return tor
 
     def get_realtime_quote(self, stock_code: str):
         """
