@@ -53,8 +53,11 @@ class AllocationReport:
 class ETFRebalancer:
     """ETF 再平衡引擎"""
 
-    def __init__(self, mx_client: MXMoniClient = None):
+    def __init__(self, mx_client: MXMoniClient = None, fetcher=None):
         self.mx_client = mx_client or MXMoniClient()
+        # 数据 manager 由入口层注入（用于 _fetch_etf_price 的实时行情回退）；
+        # 为 None 时该回退跳过，不自行构造，避免分析模块各自重复初始化数据源
+        self._fetcher = fetcher
         self.baseline = NEUTRAL_BASELINE
 
     # ── 计算目标配比 ──
@@ -99,23 +102,20 @@ class ETFRebalancer:
     def _fetch_etf_price(self, code: str) -> float:
         """获取 ETF 日线收盘价（盘后分析用，数据稳定）"""
         try:
-            import akshare as ak
-            prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
-            df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
+            from data_provider.bars import get_etf_daily
+            df = get_etf_daily(code)
             if df is not None and not df.empty:
-                latest = df.sort_values('date').iloc[-1]
-                return float(latest['close'])
+                return float(df.iloc[-1]['close'])
         except Exception as e:
-            logger.debug(f"akshare 获取 {code} 价格失败: {e}")
-        # 回退：DataFetcherManager 实时行情
-        try:
-            from data_provider.base import DataFetcherManager
-            fm = DataFetcherManager()
-            quote = fm.get_realtime_quote(code)
-            if quote and hasattr(quote, 'price') and quote.price:
-                return float(quote.price)
-        except Exception:
-            pass
+            logger.debug(f"get_etf_daily 获取 {code} 价格失败: {e}")
+        # 回退：入口注入的 manager 实时行情（未注入则跳过）
+        if self._fetcher is not None:
+            try:
+                quote = self._fetcher.get_realtime_quote(code)
+                if quote and hasattr(quote, 'price') and quote.price:
+                    return float(quote.price)
+            except Exception:
+                pass
         return 0.0
 
     def _fill_missing_prices(self, current: Dict[str, dict]):
@@ -307,10 +307,16 @@ class ETFRebalancer:
 
         # 头部信息
         if pe_percentile is not None and current_pe is not None:
-            level = "极度低估" if pe_percentile < 20 else \
-                    "低估" if pe_percentile < 40 else \
-                    "合理" if pe_percentile < 60 else \
-                    "高估" if pe_percentile < 80 else "极度高估"
+            if pe_percentile < 20:
+                level = "极度低估"
+            elif pe_percentile < 40:
+                level = "低估"
+            elif pe_percentile < 60:
+                level = "合理"
+            elif pe_percentile < 80:
+                level = "高估"
+            else:
+                level = "极度高估"
             gate_line = f"**PE 分位**: {pe_percentile:.0f}% ({level}) | **当前 PE**: {current_pe:.1f}"
         else:
             gate_line = f"**Gate**: {gate_state}" + (" + 硬拦截" if hard_intercept else "")

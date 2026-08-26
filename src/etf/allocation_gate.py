@@ -181,11 +181,10 @@ def _compute_bond_spread(current_pe: float) -> Tuple[float, str]:
 def _check_panic() -> Tuple[float, str]:
     """检查恐慌信号：连续下跌 + 缩量"""
     try:
-        import akshare as ak
-        df = ak.stock_zh_index_daily(symbol="sh000001")
+        from data_provider.bars import get_index_daily
+        df = get_index_daily("sh000001")
         if df is None or df.empty:
             return 0.0, ""
-        df = df.sort_values("date").reset_index(drop=True)
         if len(df) < 20:
             return 0.0, ""
 

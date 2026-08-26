@@ -34,7 +34,7 @@ PERCENTILE_LOOKBACK = 1250
 def _info() -> Optional[object]:
     """获取 InfoData 实例，失败返回 None。"""
     try:
-        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+        from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
 
         return AmazingDataFetcher.get_info_data()
     except Exception as e:
@@ -45,7 +45,7 @@ def _info() -> Optional[object]:
 def _is_available() -> bool:
     """AmazingData 是否可用（TGW 凭证是否配置）。"""
     try:
-        from data_provider.amazingdata_fetcher import tgw_configured
+        from data_provider.fetchers.amazingdata_fetcher import tgw_configured
 
         return tgw_configured()
     except Exception:

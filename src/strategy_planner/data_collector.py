@@ -54,7 +54,7 @@ def _fetch_index_data(symbol: str, name: str, market: str = "A") -> Optional[pd.
     # AmazingData：A 股指数直接支持（000001.SH 等格式）
     if market == "A":
         try:
-            from data_provider.amazingdata_fetcher import AmazingDataFetcher
+            from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
             from AmazingData.utils.constant import Period
 
             AmazingDataFetcher.ensure_login()
@@ -75,14 +75,12 @@ def _fetch_index_data(symbol: str, name: str, market: str = "A") -> Optional[pd.
             logger.debug(f"AmazingData 获取指数 {name} 失败，降级 akshare: {e}")
 
     try:
-        import akshare as ak
+        from data_provider.bars import get_index_daily
         if market == "A":
-            df = ak.stock_zh_index_daily(symbol=f"sh{symbol}" if symbol.startswith("000") else f"sz{symbol}")
-        else:
-            return None
-        if df is not None and len(df) > 0:
-            df = df.sort_values("date").reset_index(drop=True)
-            return df
+            df = get_index_daily(symbol)
+            if df is not None and len(df) > 0:
+                return df
+        return None
     except Exception as e:
         logger.warning(f"获取指数 {name}({symbol}) 数据失败: {e}")
     return None
@@ -297,7 +295,7 @@ def collect_macro_factors() -> Dict[str, Any]:
 
     # 两融余额（AmazingData 优先，akshare 兜底）
     try:
-        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+        from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
 
         info = AmazingDataFetcher.get_info_data()
         margin = info.get_margin_summary(is_local=False)
@@ -337,7 +335,7 @@ def collect_market_sentiment() -> Dict[str, Any]:
 
     # 两市成交额（当日）
     try:
-        from data_provider.base import DataFetcherManager
+        from data_provider import DataFetcherManager
         fm = DataFetcherManager()
         stats = fm.get_market_stats()
         if stats:
@@ -347,7 +345,7 @@ def collect_market_sentiment() -> Dict[str, Any]:
 
     # 上证成交额近5日序列（用上证指数日线 amount 作趋势代理）
     try:
-        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+        from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
         from AmazingData.utils.constant import Period
 
         AmazingDataFetcher.ensure_login()
@@ -368,7 +366,7 @@ def collect_market_sentiment() -> Dict[str, Any]:
     # 涨停/跌停家数（当日 + 近5日序列）
     try:
         import akshare as ak
-        from data_provider.amazingdata_fetcher import AmazingDataFetcher
+        from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
 
         # 用交易日历取最近 5 个交易日
         trade_dates = []
@@ -463,8 +461,10 @@ def collect_market_news() -> List[Dict[str, str]]:
 def collect_market_gate_status() -> Dict[str, Any]:
     """获取现有系统的市场门控状态"""
     try:
-        from src.analysis.market_gate import check_market_gate
-        can_trade, conditions, summary, regime, hard_intercept = check_market_gate()
+        from src.analysis.market_gate import check_market_gate, fetch_gate_inputs
+        from data_provider import DataFetcherManager
+        fm = DataFetcherManager()
+        can_trade, conditions, summary, regime, hard_intercept = check_market_gate(fetch_gate_inputs(fm))
         return {
             "can_trade": can_trade,
             "regime": regime,

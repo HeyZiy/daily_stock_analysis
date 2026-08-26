@@ -17,7 +17,6 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 import logging
 import re
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Optional, Generator
 
 import pandas as pd
@@ -29,7 +28,9 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code, _is_hk_market
+from data_provider.fetchers.base import BaseFetcher
+from data_provider.types import DataFetchError, STANDARD_COLUMNS
+from data_provider.codes import is_bse_code, _is_hk_market
 import os
 
 logger = logging.getLogger(__name__)

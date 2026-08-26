@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, Dict, Any
 
 import pandas as pd
 import requests
@@ -31,8 +31,9 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
-from .realtime_types import UnifiedRealtimeQuote
+from data_provider.fetchers.base import BaseFetcher
+from data_provider.types import DataFetchError, RateLimitError, STANDARD_COLUMNS, UnifiedRealtimeQuote
+from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
@@ -539,7 +540,7 @@ class TushareFetcher(BaseFetcher):
             logger.debug(f"TushareFetcher 跳过港股实时行情 {stock_code}")
             return None
 
-        from .realtime_types import (
+        from data_provider.types import (
             RealtimeSource,
             safe_float, safe_int
         )
@@ -638,77 +639,6 @@ class TushareFetcher(BaseFetcher):
         except Exception as e:
             logger.warning(f"Tushare (旧版) 获取实时行情失败 {stock_code}: {e}")
             return None
-
-    def get_main_indices(self, region: str = "cn") -> Optional[List[dict]]:
-        """
-        获取主要指数实时行情 (Tushare Pro)，仅支持 A 股
-        """
-        if region != "cn":
-            return None
-        if self._api is None:
-            return None
-
-        from .realtime_types import safe_float
-
-        # 指数映射：Tushare代码 -> 名称
-        indices_map = {
-            '000001.SH': '上证指数',
-            '399001.SZ': '深证成指',
-            '399006.SZ': '创业板指',
-            '000688.SH': '科创50',
-            '000016.SH': '上证50',
-            '000300.SH': '沪深300',
-        }
-
-        try:
-            self._check_rate_limit()
-
-            # Tushare index_daily 获取历史数据，实时数据需用其他接口或估算
-            # 由于 Tushare 免费用户可能无法获取指数实时行情，这里作为备选
-            # 使用 index_daily 获取最近交易日数据
-
-            end_date = datetime.now().strftime('%Y%m%d')
-            start_date = (datetime.now() - pd.Timedelta(days=5)).strftime('%Y%m%d')
-
-            results = []
-
-            # 批量获取所有指数数据
-            for ts_code, name in indices_map.items():
-                try:
-                    df = self._api.index_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-                    if df is not None and not df.empty:
-                        row = df.iloc[0] # 最新一天
-
-                        current = safe_float(row['close'])
-                        prev_close = safe_float(row['pre_close'])
-
-                        results.append({
-                            'code': ts_code.split('.')[0], # 兼容 sh000001 格式需转换，这里保持纯数字
-                            'name': name,
-                            'current': current,
-                            'change': safe_float(row['change']),
-                            'change_pct': safe_float(row['pct_chg']),
-                            'open': safe_float(row['open']),
-                            'high': safe_float(row['high']),
-                            'low': safe_float(row['low']),
-                            'prev_close': prev_close,
-                            'volume': safe_float(row['vol']),
-                            'amount': safe_float(row['amount']) * 1000, # 千元转元
-                            'amplitude': 0.0 # Tushare index_daily 不直接返回振幅
-                        })
-                except Exception as e:
-                    logger.debug(f"Tushare 获取指数 {name} 失败: {e}")
-                    continue
-
-            if results:
-                return results
-            else:
-                logger.warning("[Tushare] 未获取到指数行情数据")
-
-        except Exception as e:
-            logger.error(f"[Tushare] 获取指数行情失败: {e}")
-
-        return None
 
     def get_market_stats(self) -> Optional[dict]:
         """
@@ -905,70 +835,6 @@ class TushareFetcher(BaseFetcher):
 
         return start_date
     
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
-        """
-        获取行业板块涨跌榜 (Tushare Pro)
-        
-        数据源优先级：
-        1. 同花顺接口 (ts.pro_api().moneyflow_ind_ths)
-        2. 东财接口 (ts.pro_api().moneyflow_ind_dc)
-        注意：每个接口的行业分类和板块定义不同，会导致结果两者不一致
-        """
-        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
-            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
-
-            # 涨幅前n
-            top = df.nlargest(n, change_col)
-            top_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
-                for _, row in top.iterrows()
-            ]
-
-            bottom = df.nsmallest(n, change_col)
-            bottom_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
-                for _, row in bottom.iterrows()
-            ]
-            return top_sectors, bottom_sectors
-
-        # 15:30之后才有当天数据
-        start_date = self.get_trade_time(early_time='00:00', late_time='15:30')
-
-        # 优先同花顺接口
-        logger.info("[Tushare] ts.pro_api().moneyflow_ind_ths 获取板块排行(同花顺)...")
-        try:
-            df = self._api.moneyflow_ind_ths(trade_date=start_date)
-            if df is not None and not df.empty:
-                change_col = 'pct_change'
-                name = 'industry'
-                if change_col in df.columns:
-                    return _get_rank_top_n(df, change_col, name, n)
-        except Exception as e:
-            logger.warning(f"[Tushare] 获取同花顺行业板块涨跌榜失败: {e} 尝试东财接口")
-
-        # 同花顺接口失败，降级尝试东财接口
-        logger.info("[Tushare] ts.pro_api().moneyflow_ind_dc 获取板块排行(东财)...")
-        try:
-            df = self._api.moneyflow_ind_dc(trade_date=start_date)
-            if df is not None and not df.empty:
-                df = df[df['content_type'] == '行业']  # 过滤出行业板块
-                change_col = 'pct_change'
-                name = 'name'
-                if change_col in df.columns:
-                    return _get_rank_top_n(df, change_col, name, n)
-        except Exception as e:
-            logger.warning(f"[Tushare] 获取东财行业板块涨跌榜失败: {e}")
-            return None
-        
-        # 获取为空或者接口调用失败，返回 None
-        return None
-    
-    
-
-    
-
-
 if __name__ == "__main__":
     # 测试代码
     logging.basicConfig(level=logging.DEBUG)
@@ -1004,23 +870,3 @@ if __name__ == "__main__":
             print("Failed to compute market stats.")
     except Exception as e:
         print(f"Failed to compute market stats: {e}")
-
-
-    # 测试行业板块排名
-    print("\n" + "=" * 50)
-    print("测试行业板块排名获取")
-    print("=" * 50)
-    try:
-        rankings = fetcher.get_sector_rankings(n=5)
-        if rankings:
-            top, bottom = rankings
-            print("涨幅榜 Top 5:")
-            for sector in top:
-                print(f"{sector['name']}: {sector['change_pct']}%")
-            print("\n跌幅榜 Top 5:")
-            for sector in bottom:
-                print(f"{sector['name']}: {sector['change_pct']}%")
-        else:
-            print("未获取到行业板块排名数据")
-    except Exception as e:
-        print(f"[行业板块排名] 获取失败: {e}")

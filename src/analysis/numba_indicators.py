@@ -12,6 +12,10 @@ numba 指标计算模块（AmazingData 算子）
 - 优先使用 AmazingData 算子（numba JIT 编译，性能远高于 pandas rolling）
 - AmazingData 未安装或导入失败时自动回退到 pandas 实现（保持 CI 可用）
 - 所有函数入参/出参均为 pandas Series，与旧逻辑兼容
+
+归属说明（2026-08-26 从 data_provider/ 迁至 src/analysis/）：
+- 本模块是纯计算（指标算子），属分析层；import AmazingData 只是用其算子库，
+  不涉及任何数据获取。数据层（data_provider）不再承担指标计算。
 """
 
 import logging
@@ -155,11 +159,29 @@ def rsi(series: pd.Series, period: int) -> pd.Series:
 
 def volume_ratio(volume: pd.Series) -> pd.Series:
     """
-    量比：当日成交量 / 前 5 日均量。
+    量比：当日成交量 / 前 5 日均量(shift 1)，无前值补 1.0。
 
-    与 BaseFetcher._calculate_indicators 的旧逻辑一致：
-    当日量 / 5日均量(shift 1)，无前值补 1.0。
+    注意口径：这是"日成交量相对前5日均量的倍数"（放量倍数），
+    与交易软件"分时量比（同一时刻对比）"不同。沿用原数据层 _calculate_indicators 的口径。
     """
     avg_volume_5 = ma(volume, 5, min_periods=1)
     ratio = volume / avg_volume_5.shift(1)
     return ratio.fillna(1.0)
+
+
+def add_standard_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    为日线 df 追加标准指标列：ma5 / ma10 / ma20 / volume_ratio。
+
+    原 BaseFetcher._calculate_indicators 的逻辑（2026-08-26 从数据层摘出）：
+    指标计算属分析层关注点，由入口脚本在取数后统一调用；
+    data_provider.get_daily_data 只返回标准行情列。
+    """
+    df = df.copy()
+    df['ma5'] = ma(df['close'], 5, min_periods=1)
+    df['ma10'] = ma(df['close'], 10, min_periods=1)
+    df['ma20'] = ma(df['close'], 20, min_periods=1)
+    df['volume_ratio'] = volume_ratio(df['volume'])
+    indicator_cols = ['ma5', 'ma10', 'ma20', 'volume_ratio']
+    df[indicator_cols] = df[indicator_cols].round(2)
+    return df

@@ -82,20 +82,40 @@ STATE_LABELS = {
     S_FORMING: "🟡 形成中",
 }
 
+# ── 各状态的投资含义（元层翻译，非交易计划：无标的、无仓位数字）──
+ADVICE = {
+    S_STRONG: {
+        "结构": "收益集中在主线簇，分散会稀释收益；这是持有者的舒适期，不是新进场的理由",
+        "战法": "动量/趋势类打法胜率最高（持有为主、回调加仓）；均值回归类（网格/低吸）反而吃亏",
+    },
+    S_FORMING: {
+        "结构": "主线未确认，任何方向的风格押注都是掷硬币；均衡/不动占优",
+        "战法": "不追高、不做左侧重注；确认前的等待本身就是决策",
+    },
+    S_VACUUM: {
+        "结构": "风格暴露没有回报来源；宽基/均衡是理性结构",
+        "战法": "动量类失血期（追上周强势≈买脉冲顶部）；区间低吸相对占优，或干脆不动",
+    },
+    S_FADING: {
+        "结构": "旧主线资金撤离，持有旧主线的风险大于机会；防御结构优先",
+        "战法": "只出不进；旧簇企稳前的任何'抄底主线'都是左侧",
+    },
+}
+
 
 # ══════════════ 数据获取 ══════════════
 
 def fetch_index_daily() -> Dict[str, pd.DataFrame]:
-    """宽基指数日线（akshare 新浪源，全历史）。失败的跳过。
+    """宽基指数日线（统一走 data_provider.bars.get_index_daily，含 399 东财/新浪备援）。失败的跳过。
 
     Returns: {指数名: df(date, close)}，date 为 datetime 升序
     """
-    import akshare as ak
+    from data_provider.bars import get_index_daily
 
     out = {}
     for name, sym in INDEX_MAP.items():
         try:
-            df = ak.stock_zh_index_daily(symbol=sym)
+            df = get_index_daily(sym)
             if df is not None and len(df) > MOM_LONG + 10:
                 df = df.copy()
                 df["date"] = pd.to_datetime(df["date"])
@@ -455,19 +475,60 @@ def _format_pct(v: Optional[float]) -> str:
     return "N/A" if v is None else f"{v:+.2f}%"
 
 
-def _market_gate_section() -> str:
-    """市场门控环境（复用现有 check_market_gate，失败降级）。"""
-    lines = ["### 四、市场环境（门控）", ""]
-    try:
-        from src.analysis.market_gate import check_market_gate
+def _trigger_lines(snap: dict, state: str, strong_cand_streak: int) -> List[str]:
+    """状态翻转观察哨：复用判定阈值，给出当前值与距离，最多 3 条。"""
+    spread = snap["spread"]
+    retention = snap["retention"]
+    top5_ret5 = snap["top5_ret5"]
 
-        can_trade, conditions, _, regime, hard_intercept = check_market_gate()
-        lines.append(f"- 市场状态: **{regime}** | 允许开仓: {'是' if can_trade else '否'} | 硬拦截: {'触发' if hard_intercept else '无'}")
-        for name, ok in (conditions or {}).items():
-            lines.append(f"  - {'✅' if ok else '❌'} {name}")
-    except Exception as e:
-        lines.append(f"- 获取失败: {e}")
-    return "\n".join(lines)
+    if state in (S_FORMING, S_VACUUM):
+        unmet = []
+        if spread < SPREAD_STRONG:
+            unmet.append(f"spread ≥{SPREAD_STRONG:.0f}%（现在 {spread:+.1f}%）")
+        if retention is None or retention < RETENTION_STRONG:
+            unmet.append(f"重合率 ≥{RETENTION_STRONG:.0%}（现在 {_retention_txt(retention)}）")
+        if top5_ret5 <= 0:
+            unmet.append(f"领涨组 5d > 0（现在 {top5_ret5:+.1f}%）")
+        if unmet:
+            triggers = ["转强势还差 " + "、".join(unmet) + f"，且需连续 {STRONG_CONFIRM_WEEKS} 周"]
+        else:
+            triggers = [f"强势条件已满足，确认进度 {strong_cand_streak}/{STRONG_CONFIRM_WEEKS} 周"]
+        if state == S_FORMING:
+            triggers.append(
+                f"转真空警戒：spread ≤{SPREAD_VACUUM:.0f}%（现在 {spread:+.1f}%）或重合率 ≤{RETENTION_VACUUM:.0%}"
+            )
+        return triggers[:3]
+
+    if state == S_STRONG:
+        return [
+            f"强势终结信号：领涨组 5d ≤{LEADER_FADE:.0f}%（现在 {top5_ret5:+.1f}%）"
+            f"或 spread ≤{SPREAD_KEEP:.0f}%（现在 {spread:+.1f}%）"
+        ]
+
+    if state == S_FADING:
+        cur = snap.get("prev_leaders_ret5")
+        cur_txt = "无记录" if cur is None else f"{cur:+.1f}%"
+        return [f"退潮结束信号：前期领涨组 5d 回升到 {LEADER_FADE:.0f}% 上方（现在 {cur_txt}）"]
+
+    return []
+
+
+def _advice_section(snap: dict, state: str, strong_cand_streak: int) -> List[str]:
+    """'下周怎么办'：状态的投资含义（元层翻译，非交易计划）。"""
+    lines = [
+        "## 二、下周怎么办（风格层含义）",
+        "",
+        "> 本节只翻译风格状态的含义；总仓位不归风格层管，由门控/估值层决定。",
+        "",
+    ]
+    advice = ADVICE.get(state, {})
+    if advice.get("结构"):
+        lines.append(f"- **结构**：{advice['结构']}")
+    if advice.get("战法"):
+        lines.append(f"- **战法**：{advice['战法']}")
+    lines.extend(f"- **触发器**：{t}" for t in _trigger_lines(snap, state, strong_cand_streak))
+    lines.append("")
+    return lines
 
 
 def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List[str]) -> str:
@@ -487,12 +548,12 @@ def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List
     lines.append(f"- 主导风格: **{dominant_style(snap)}**")
     for r in reasons:
         lines.append(f"- 判定依据: {r}")
-    if strong_cand_streak > 0:
-        lines.append(f"- 强势确认进度: {strong_cand_streak}/{STRONG_CONFIRM_WEEKS} 周")
     lines.append("")
 
-    # 二、主线明细
-    lines.append("## 二、主线明细")
+    lines.extend(_advice_section(snap, state_str, strong_cand_streak))
+
+    # 三、主线明细
+    lines.append("## 三、主线明细")
     lines.append("")
     lines.append("领涨组（20d 动量 Top5）：")
     lines.append("")
@@ -516,8 +577,8 @@ def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List
         lines.append(f"- 🔴 BOTTOM{i}: {b['name']}（{b['cluster']}）20d {b['ret20']:+.1f}%")
     lines.append("")
 
-    # 三、风格指标
-    lines.append("## 三、风格指标")
+    # 四、风格指标
+    lines.append("## 四、风格指标")
     lines.append("")
     lines.append(f"- 大小盘（中证1000 − 沪深300）: 20d **{_format_pct(snap['size20'])}** | 60d {_format_pct(snap['size60'])}")
     lines.append(f"- 市场宽度（行业站上 MA20 占比）: **{snap['breadth']:.0%}**")
@@ -528,10 +589,6 @@ def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List
     lines.append("|----|-----|----|")
     for cluster, r in sorted(snap["cluster_rets"].items(), key=lambda kv: kv[1]["ret20"], reverse=True):
         lines.append(f"| {cluster} | {r['ret20']:+.1f}% | {_format_pct(r['ret5'])} |")
-    lines.append("")
-
-    # 四、市场环境
-    lines.append(_market_gate_section())
     lines.append("")
 
     return "\n".join(lines)

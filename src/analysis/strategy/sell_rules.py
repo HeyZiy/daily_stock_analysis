@@ -310,8 +310,8 @@ def fetch_sector_pct_map() -> Dict[str, float]:
     多源回退：akshare 东财全量板块 → akshare 新浪 → efinance（东财实时），
     单一数据源不稳定不影响整体；全部失败时板块类卖出规则跳过。
     """
-    from data_provider.akshare_fetcher import AkshareFetcher
-    from data_provider.efinance_fetcher import EfinanceFetcher
+    from data_provider.fetchers.akshare_fetcher import AkshareFetcher
+    from data_provider.fetchers.efinance_fetcher import EfinanceFetcher
 
     try:
         result = AkshareFetcher().get_sector_pct_map()

@@ -27,9 +27,8 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, Tuple
 
 import pandas as pd
 import requests  # 引入 requests 以捕获异常
@@ -99,21 +98,22 @@ def _get_session() -> requests.Session:
                 _session.mount('http://', adapter)
     return _session
 
-from src.config import get_config
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
-from .realtime_types import (
+
+from data_provider.fetchers.base import BaseFetcher
+from data_provider.types import (
+    DataFetchError, RateLimitError, STANDARD_COLUMNS,
     UnifiedRealtimeQuote, RealtimeSource,
-    get_realtime_circuit_breaker,
-    safe_float, safe_int  # 使用统一的类型转换函数
+    get_realtime_circuit_breaker, safe_float, safe_int,
 )
+from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
 
 
-# 保留旧的类型别名，用于向后兼容
+# EfinanceRealtimeQuote 别名（外部统一引用 UnifiedRealtimeQuote）
 @dataclass
 class EfinanceRealtimeQuote:
     """
-    实时行情数据（来自 efinance）- 向后兼容别名
-    
+    实时行情数据（来自 efinance）别名
+
     新代码建议使用 UnifiedRealtimeQuote
     """
     code: str
@@ -739,7 +739,7 @@ class EfinanceFetcher(BaseFetcher):
             
             row = row.iloc[0]
             
-            # 使用 realtime_types.py 中的统一转换函数
+            # 使用 types.py 中的统一转换函数
             # 获取列名（可能是中文或英文）
             name_col = '股票名称' if '股票名称' in df.columns else 'name'
             price_col = '最新价' if '最新价' in df.columns else 'price'
@@ -885,83 +885,6 @@ class EfinanceFetcher(BaseFetcher):
             circuit_breaker.record_failure(source_key, str(e))
             return None
 
-    def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
-        """
-        获取主要指数实时行情 (efinance)，仅支持 A 股
-        """
-        if region != "cn":
-            return None
-        import efinance as ef
-
-        indices_map = {
-            '000001': ('上证指数', 'sh000001'),
-            '399001': ('深证成指', 'sz399001'),
-            '399006': ('创业板指', 'sz399006'),
-            '000688': ('科创50', 'sh000688'),
-            '000016': ('上证50', 'sh000016'),
-            '000300': ('沪深300', 'sh000300'),
-        }
-
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ef.stock.get_realtime_quotes(['沪深系列指数']) 获取指数行情...")
-            import time as _time
-            api_start = _time.time()
-            df = _ef_call_with_timeout(ef.stock.get_realtime_quotes, ['沪深系列指数'])
-            api_elapsed = _time.time() - api_start
-
-            if df is None or df.empty:
-                logger.warning(f"[API返回] 指数行情为空, 耗时 {api_elapsed:.2f}s")
-                return None
-
-            logger.info(f"[API返回] 指数行情成功: {len(df)} 条, 耗时 {api_elapsed:.2f}s")
-            code_col = '股票代码' if '股票代码' in df.columns else 'code'
-            code_series = df[code_col].astype(str).str.zfill(6)
-
-            results: List[Dict[str, Any]] = []
-            for code, (name, full_code) in indices_map.items():
-                row = df[code_series == code]
-                if row.empty:
-                    continue
-                item = row.iloc[0]
-
-                price_col = '最新价' if '最新价' in df.columns else 'price'
-                pct_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
-                chg_col = '涨跌额' if '涨跌额' in df.columns else 'change'
-                open_col = '开盘' if '开盘' in df.columns else 'open'
-                high_col = '最高' if '最高' in df.columns else 'high'
-                low_col = '最低' if '最低' in df.columns else 'low'
-                vol_col = '成交量' if '成交量' in df.columns else 'volume'
-                amt_col = '成交额' if '成交额' in df.columns else 'amount'
-                amp_col = '振幅' if '振幅' in df.columns else 'amplitude'
-
-                current = safe_float(item.get(price_col, 0))
-                change_amount = safe_float(item.get(chg_col, 0))
-
-                results.append({
-                    'code': full_code,
-                    'name': name,
-                    'current': current,
-                    'change': change_amount,
-                    'change_pct': safe_float(item.get(pct_col, 0)),
-                    'open': safe_float(item.get(open_col, 0)),
-                    'high': safe_float(item.get(high_col, 0)),
-                    'low': safe_float(item.get(low_col, 0)),
-                    'prev_close': current - change_amount if current or change_amount else 0,
-                    'volume': safe_float(item.get(vol_col, 0)),
-                    'amount': safe_float(item.get(amt_col, 0)),
-                    'amplitude': safe_float(item.get(amp_col, 0)),
-                })
-
-            if results:
-                logger.info(f"[efinance] 获取到 {len(results)} 个指数行情")
-            return results if results else None
-        except Exception as e:
-            logger.error(f"[efinance] 获取指数行情失败: {e}")
-            return None
-
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计 (efinance)
@@ -1104,38 +1027,6 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取全量板块行情失败: {e}")
             return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
-        """
-        获取板块涨跌榜 (efinance)
-        """
-        try:
-            df = self.get_sector_quotes()
-            if df is None or df.empty:
-                return None
-
-            change_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
-            name_col = '股票名称' if '股票名称' in df.columns else 'name'
-            if change_col not in df.columns or name_col not in df.columns:
-                return None
-
-            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
-            top = df.nlargest(n, change_col)
-            bottom = df.nsmallest(n, change_col)
-
-            top_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                for _, row in top.iterrows()
-            ]
-            bottom_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                for _, row in bottom.iterrows()
-            ]
-            return top_sectors, bottom_sectors
-        except Exception as e:
-            logger.error(f"[efinance] 获取板块排行失败: {e}")
-            return None
-    
     def get_base_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
         获取股票基本信息

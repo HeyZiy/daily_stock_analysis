@@ -10,7 +10,6 @@ from typing import Optional, List
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
 from email.header import Header
 from email.utils import formataddr
 import smtplib
@@ -210,62 +209,6 @@ class EmailSender:
             return False
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
-            return False
-        finally:
-            self._close_server(server)
-
-    def _send_email_with_inline_image(
-        self, image_bytes: bytes, receivers: Optional[List[str]] = None
-    ) -> bool:
-        """Send email with inline image attachment (Issue #289)."""
-        if not self._is_email_configured():
-            return False
-        sender = self._email_config['sender']
-        password = self._email_config['password']
-        receivers = receivers or self._email_config['receivers']
-        server: Optional[smtplib.SMTP] = None
-        try:
-            date_str = datetime.now().strftime('%Y-%m-%d')
-            subject = f"📈 股票智能分析报告 - {date_str}"
-            msg = MIMEMultipart('related')
-            msg['Subject'] = Header(subject, 'utf-8')
-            msg['From'] = self._format_sender_address(sender)
-            msg['To'] = ', '.join(receivers)
-
-            alt = MIMEMultipart('alternative')
-            alt.attach(MIMEText('报告已生成，详见下方图片。', 'plain', 'utf-8'))
-            html_body = (
-                '<p>报告已生成，详见下方图片（点击可查看大图）：</p>'
-                '<p><img src="cid:report-image" alt="股票分析报告" style="max-width:100%%;" /></p>'
-            )
-            alt.attach(MIMEText(html_body, 'html', 'utf-8'))
-            msg.attach(alt)
-
-            img_part = MIMEImage(image_bytes, _subtype='png')
-            img_part.add_header('Content-Disposition', 'inline', filename='report.png')
-            img_part.add_header('Content-ID', '<report-image>')
-            msg.attach(img_part)
-
-            domain = sender.split('@')[-1].lower()
-            smtp_config = SMTP_CONFIGS.get(domain)
-            if smtp_config:
-                smtp_server, smtp_port = smtp_config['server'], smtp_config['port']
-                use_ssl = smtp_config['ssl']
-            else:
-                smtp_server, smtp_port = f"smtp.{domain}", 465
-                use_ssl = True
-
-            if use_ssl:
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
-            else:
-                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-                server.starttls()
-            server.login(sender, password)
-            server.send_message(msg)
-            logger.info("邮件（内联图片）发送成功，收件人: %s", receivers)
-            return True
-        except Exception as e:
-            logger.error("邮件（内联图片）发送失败: %s", e)
             return False
         finally:
             self._close_server(server)

@@ -35,8 +35,9 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from data_provider.base import DataFetcherManager, canonical_stock_code
-from src.analysis.market_gate import check_market_gate
+from data_provider import DataFetcherManager, canonical_stock_code
+from src.analysis.market_gate import check_market_gate, fetch_gate_inputs
+from src.analysis.numba_indicators import add_standard_indicators
 from src.config import setup_env
 from src.notify.service import NotificationService
 from src.mx.service import MXService
@@ -130,7 +131,8 @@ class SimpleTechnicalAnalyzer:
                     if df_latest_date < last_trading_day:
                         logger.error(f"❌ {code} 网络获取的数据仍过期(最新:{df_latest_date}, 需要:{last_trading_day})")
                         return None
-                return df
+                # 数据层不再算指标，入口取数后统一追加（ma5/ma10/ma20/volume_ratio）
+                return add_standard_indicators(df)
             else:
                 logger.error(f"❌ {code} 从网络获取数据失败")
                 return None
@@ -142,7 +144,7 @@ class SimpleTechnicalAnalyzer:
     def _fetch_stock_sector(self, code: str) -> str:
         """获取股票所属板块名称，失败返回空串"""
         try:
-            from data_provider.efinance_fetcher import EfinanceFetcher
+            from data_provider.fetchers.efinance_fetcher import EfinanceFetcher
             ef = EfinanceFetcher()
             df = ef.get_belong_board(code)
             if df is not None and not df.empty and "板块名称" in df.columns:
@@ -501,8 +503,9 @@ def main():
             else:
                 logger.warning("从妙想删除失败")
         
-        # 4. 市场环境检查 + 调节信号评分
-        can_trade, market_conditions, market_summary, market_regime, hard_intercept = check_market_gate()
+        # 4. 市场环境检查 + 调节信号评分（入口取数 → 纯判定）
+        gate_inputs = fetch_gate_inputs(analyzer.fetcher)
+        can_trade, market_conditions, market_summary, market_regime, hard_intercept = check_market_gate(gate_inputs)
         logger.info(market_summary)
         if hard_intercept:
             logger.warning("硬拦截触发！当日应清仓所有持仓，不执行任何买入操作")

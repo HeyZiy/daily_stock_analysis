@@ -63,33 +63,30 @@ def _save_state(state: dict):
 
 # ── 数据获取 + 评分 ──
 
-def _fetch_etf_daily(code: str) -> Optional[pd.DataFrame]:
-    """获取 ETF 日线数据"""
-    try:
-        import akshare as ak
-        prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
-        df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
-        if df is not None and not df.empty:
-            df = df.sort_values("date").reset_index(drop=True)
-            return df
-    except Exception:
-        pass
+def _fetch_etf_daily(code: str, fm=None) -> Optional[pd.DataFrame]:
+    """获取 ETF 日线数据（由入口 score_all_etfs 调用）。
 
-    try:
-        from data_provider.base import DataFetcherManager
-        fm = DataFetcherManager()
-        df = fm.get_daily_kline(code, days=60)
-        if df is not None and not df.empty:
-            return df
-    except Exception:
-        pass
+    统一走 data_provider.bars.get_etf_daily（新浪单源 + 归一化）。
+    fm 仅作过渡期兜底：get_etf_daily 失败时退回老 DataFetcherManager，后续 Phase 移除。
+    """
+    from data_provider.bars import get_etf_daily
 
+    df = get_etf_daily(code)
+    if df is not None and not df.empty:
+        return df
+
+    if fm is not None:
+        try:
+            fallback, _ = fm.get_daily_data(code, days=60)
+            if fallback is not None and not fallback.empty:
+                return fallback
+        except Exception:
+            pass
     return None
 
 
-def _score_etf(code: str, name: str) -> dict:
-    """对单个 ETF 打分（0-100）"""
-    df = _fetch_etf_daily(code)
+def _score_etf(code: str, name: str, df: Optional[pd.DataFrame]) -> dict:
+    """对单个 ETF 打分（0-100）；df 由入口取好传入（纯打分，不取数）"""
     if df is None or len(df) < 25:
         return {"code": code, "name": name, "score": 0, "error": True}
 
@@ -201,10 +198,13 @@ def _score_etf(code: str, name: str) -> dict:
 
 
 def score_all_etfs(entries: List[dict]) -> List[dict]:
-    """对全行业 ETF 清单中所有标的打分并排名"""
+    """对全行业 ETF 清单中所有标的打分并排名（入口：统一构造 manager 并逐只取数，打分纯函数化）"""
+    from data_provider import get_fetcher
+    fm = get_fetcher()
     results = []
     for entry in entries:
-        res = _score_etf(entry["code"], entry.get("name", ""))
+        df = _fetch_etf_daily(entry["code"], fm)
+        res = _score_etf(entry["code"], entry.get("name", ""), df)
         results.append(res)
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
@@ -406,11 +406,10 @@ def run_rotation(positions: List[dict], total_assets: float, pe_pct: float,
 def _get_price(code: str) -> float:
     """获取 ETF 当前价格"""
     try:
-        import akshare as ak
-        prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
-        df = ak.stock_zh_index_daily(symbol=f"{prefix}{code}")
+        from data_provider.bars import get_etf_daily
+        df = get_etf_daily(code)
         if df is not None and not df.empty:
-            return float(df.sort_values("date").iloc[-1]["close"])
+            return float(df.iloc[-1]["close"])
     except Exception:
         pass
     return 0.0

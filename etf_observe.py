@@ -163,7 +163,10 @@ def _compute_allocation():
         offset, pe_pct, current_pe = 0.0, None, None
 
     total_assets = balance["total_assets"]
-    rebalancer = ETFRebalancer(client)
+    # 入口统一构造数据 manager，传给需要行情数据的下游模块（避免各自重复构造）
+    from data_provider import get_fetcher
+    fm = get_fetcher()
+    rebalancer = ETFRebalancer(client, fetcher=fm)
     target = rebalancer.calculate_target(equity_offset=offset)
     core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)
     core_assets = max(total_assets - rotation_mv, 0.0)
@@ -176,15 +179,15 @@ def _compute_allocation():
     rocket = None
     regime, hard_intercept = "chaos", False
     try:
-        from src.analysis.market_gate import check_market_gate
+        from src.analysis.market_gate import check_market_gate, fetch_gate_inputs
 
-        _can, _cond, _sum, regime, hard_intercept = check_market_gate()
+        _can, _cond, _sum, regime, hard_intercept = check_market_gate(fetch_gate_inputs(fm))
     except Exception:
         logger.warning("市场门控获取失败，卫星仓禁买", exc_info=True)
     try:
         from src.etf import rocket_breakout as rocket_mod
 
-        rocket = rocket_mod.analyze_satellite(positions, total_assets, pe_pct,
+        rocket = rocket_mod.analyze_satellite(positions, total_assets,
                                               hard_intercept, regime, client=client)
     except Exception:
         logger.warning("卫星仓分析失败", exc_info=True)
@@ -318,7 +321,7 @@ def _satellite_overview(rocket: dict) -> str:
     lines = ["## 四、卫星仓 — ETF 火箭", ""]
     lines.append(f"预算 10% | 最多 2 只 | 当前卫星持仓市值 {rocket['satellite_mv']:,.0f} 元")
     if rocket["locked"]:
-        lines.append("🔒 PE 分位 ≥60% 或硬拦截，卫星仓锁定（禁买、清仓）")
+        lines.append("🔒 市场门控硬拦截，卫星仓锁定（禁买、清仓）")
     lines.append("")
 
     lines.append("### 火箭信号候选（放量突破）")

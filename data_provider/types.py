@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-实时行情统一类型定义 & 熔断机制
+统一数据契约
 ===================================
 
-设计目标：
-1. 统一各数据源的实时行情返回结构
-2. 实现熔断/冷却机制，避免连续失败时反复请求
-3. 支持多数据源故障切换
+集中存放数据层契约与类型：
+1. STANDARD_COLUMNS：日线标准化列名
+2. DataFetchError / RateLimitError / DataSourceUnavailableError：异常体系
+3. UnifiedRealtimeQuote / ChipDistribution / CircuitBreaker / RealtimeSource：
+   实时行情统一结构、筹码分布、熔断机制
+4. safe_float / safe_int：类型转换工具
 
 使用方式：
 - 所有 Fetcher 的 get_realtime_quote() 统一返回 UnifiedRealtimeQuote
@@ -17,10 +19,57 @@
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Tuple
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg', 'turnover_rate']
+
+
+def unwrap_exception(exc: Exception) -> Exception:
+    """
+    Follow chained exceptions and return the deepest non-cyclic cause.
+    """
+    current = exc
+    visited = set()
+
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        next_exc = current.__cause__ or current.__context__
+        if next_exc is None:
+            break
+        current = next_exc
+
+    return current
+
+
+def summarize_exception(exc: Exception) -> Tuple[str, str]:
+    """
+    Build a stable summary for logs while preserving the application-layer message.
+    """
+    root = unwrap_exception(exc)
+    error_type = type(root).__name__
+    message = str(exc).strip() or str(root).strip() or error_type
+    return error_type, " ".join(message.split())
+
+
+
+class DataFetchError(Exception):
+    """数据获取异常基类"""
+    pass
+
+
+class RateLimitError(DataFetchError):
+    """API 速率限制异常"""
+    pass
+
+
+class DataSourceUnavailableError(DataFetchError):
+    """数据源不可用异常"""
+    pass
+
+
 
 
 # ============================================
@@ -399,19 +448,7 @@ _realtime_circuit_breaker = CircuitBreaker(
     half_open_max_calls=1
 )
 
-# 筹码接口熔断器（更保守的策略，因为该接口更不稳定）
-_chip_circuit_breaker = CircuitBreaker(
-    failure_threshold=2,      # 连续失败2次熔断
-    cooldown_seconds=600.0,   # 冷却10分钟
-    half_open_max_calls=1
-)
-
-
 def get_realtime_circuit_breaker() -> CircuitBreaker:
     """获取实时行情熔断器"""
     return _realtime_circuit_breaker
 
-
-def get_chip_circuit_breaker() -> CircuitBreaker:
-    """获取筹码接口熔断器"""
-    return _chip_circuit_breaker

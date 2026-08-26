@@ -2,7 +2,7 @@
 
 个人 A 股量化交易系统：趋势波段、ETF 长期配置、行业轮动观察 + LLM 策略规划器（自进化）。
 
-- **数据**：多源行情（AmazingData > tushare > akshare > efinance > baostock > yfinance），自动降级容错
+- **数据**：个股多源行情（AmazingData > tushare > akshare > efinance > baostock > yfinance，自动降级容错）；ETF / A股指数走 akshare 单源（`data_provider/bars.py`）
 - **交易**：妙想模拟仓 API（`src/mx/`）
 - **通知**：飞书 / 钉钉 / 企业微信 / 邮件多渠道推送
 - **部署**：Linux 云服务器 + crontab（已从 GitHub Actions 迁移）
@@ -91,7 +91,12 @@ python xxx.py --debug --no-notify                 # 调试模式 + 不推送通�
 strategy_planner.py      双 Agent 策略规划器入口（诊断 + 推荐 + 自进化）
 trend_analysis.py        趋势交易日度分析入口
 etf_observe.py           ETF 周度观察/调仓入口
-data_provider/           多源行情数据（优先级降级）
+data_provider/           数据接入层
+  ├ bars.py              日线入口：get_etf_daily(ETF) / get_index_daily(A股指数)，akshare 单源
+  ├ manager.py           个股日线多源（AmazingData>Tushare>…）+ get_fetcher
+  ├ realtime.py          实时报价跨源合并 merge_realtime_quotes
+  ├ codes.py / types.py  契约：代码判定 / 统一类型（STANDARD_COLUMNS + 异常 + 实时类型）
+  └ fetchers/            数据源实现（base + akshare / efinance / tushare / yfinance / baostock / amazingdata）
 src/analysis/            市场门控 market_gate、报告生成 report、信号检测 signal_detector、剔除规则 removal_rules
 src/etf/                 ETF 配置：估值门控、再平衡、火箭引擎、行业轮动、因子封装、基准配置
 src/mx/                  妙想模拟仓 API 客户端
@@ -109,7 +114,6 @@ docs/                    外部工具说明书
 # 前置（详见 deploy/crontab.server 顶部注释）
 cd /srv/regime-trader
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-sudo apt-get install -y wkhtmltopdf    # 图片通知（md2img）
 # 配置 .env（含 MX_APIKEY / TGW_* 等），确认时区为 Asia/Shanghai
 
 # 安装定时任务

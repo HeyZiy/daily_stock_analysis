@@ -13,7 +13,7 @@ AmazingDataFetcher - 星耀数智数据源
 设计：
 - 懒登录：首次使用时登录，登录失败抛出异常让 DataFetcherManager 切换
 - 未配置 TGW 凭证时不注册（_init_default_fetchers 检查）
-- 指标计算走 AmazingData numba 算子（见 numba_indicators.py）
+- 换手率由 _normalize_data 自算（volume ÷ 流通A股），指标计算已移出数据层
 """
 
 import contextlib
@@ -21,12 +21,14 @@ import io
 import logging
 import os
 import threading
-from typing import Optional, Dict, Any, List
+from typing import ClassVar, Optional, Dict, Any
 
 import numpy as np
 import pandas as pd
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, normalize_stock_code
+from data_provider.fetchers.base import BaseFetcher
+from data_provider.types import DataFetchError, STANDARD_COLUMNS
+from data_provider.codes import normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,9 @@ class AmazingDataFetcher(BaseFetcher):
     # 未配置凭证时不注册。失败时由 DataFetcherManager 自动切换到下一数据源
     priority = int(os.getenv("AMAZINGDATA_PRIORITY", "-2"))
 
-    # query_kline 不返回换手率，列回退时直接跳过本源，不发无效请求
+    # query_kline 原生不返回换手率，故不声明 turnover_rate：主源成功时由 _normalize_data
+    # 自算该列（不触发回退）；自算失败时回退循环本就跳过主源自身，直接走 akshare，
+    # 不把本源当候选回退源可避免"整段日线重拉一遍再自算一次"的无效请求
     SUPPORTS_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg'}
 
     # 登录单例
@@ -232,8 +236,8 @@ class AmazingDataFetcher(BaseFetcher):
         existing_cols = [c for c in keep_cols if c in df.columns]
         return df[existing_cols]
 
-    # 流通股本（万股）会话级缓存：key = tgw 代码，value = 按变动日索引的 Series
-    _float_shares_cache: "dict" = {}
+    # 流通股本（万股）进程级缓存（类属性，全实例共享）：key = tgw 代码，value = 按变动日索引的 Series
+    _float_shares_cache: ClassVar[Dict[str, pd.Series]] = {}
 
     def _fetch_float_shares_series(self, tgw_code: str, begin: int, end: int) -> Optional[pd.Series]:
         """
@@ -337,16 +341,8 @@ class AmazingDataFetcher(BaseFetcher):
         """
         return None
 
-    def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
-        """AmazingData 指数快照接口未封装，返回 None。"""
-        return None
-
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """AmazingData 未提供市场统计接口，返回 None。"""
-        return None
-
-    def get_sector_rankings(self, n: int = 5):
-        """AmazingData 未提供板块排行接口，返回 None。"""
         return None
 
 

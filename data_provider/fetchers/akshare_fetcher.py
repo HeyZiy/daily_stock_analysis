@@ -23,15 +23,12 @@ AkshareFetcher - 主数据源 (Priority 1)
 - 筹码分布：获利比例、平均成本、筹码集中度
 """
 
+import time
+
 import logging
 import os
-import random
-import time
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
-
 import pandas as pd
+import random
 import requests
 from tenacity import (
     retry,
@@ -40,18 +37,17 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
-
-from src.config import get_config
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
-from .realtime_types import (
-    UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
-    get_realtime_circuit_breaker, get_chip_circuit_breaker,
-    safe_float, safe_int  # 使用统一的类型转换函数
+from typing import Optional, Dict, Any, Tuple
+from data_provider.fetchers.base import BaseFetcher
+from data_provider.types import (
+    DataFetchError, RateLimitError, STANDARD_COLUMNS,
+    UnifiedRealtimeQuote, RealtimeSource,
+    get_realtime_circuit_breaker, safe_float, safe_int,
 )
-from .us_index_mapping import is_us_index_code, is_us_stock_code
+from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
+from data_provider.us_index_mapping import is_us_stock_code
 
-
-# 保留旧的 RealtimeQuote 别名，用于向后兼容
+# RealtimeQuote 别名，统一实时报价类型引用
 RealtimeQuote = UnifiedRealtimeQuote
 
 
@@ -894,7 +890,7 @@ class AkshareFetcher(BaseFetcher):
             
             row = row.iloc[0]
             
-            # 使用 realtime_types.py 中的统一转换函数
+            # 使用 types.py 中的统一转换函数
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=str(row.get('名称', '')),
@@ -1032,7 +1028,7 @@ class AkshareFetcher(BaseFetcher):
             # 新浪数据字段顺序：
             # 0:名称 1:今开 2:昨收 3:最新价 4:最高 5:最低 6:买一价 7:卖一价
             # 8:成交量(股) 9:成交额(元) ... 30:日期 31:时间
-            # 使用 realtime_types.py 中的统一转换函数
+            # 使用 types.py 中的统一转换函数
             price = safe_float(fields[3])
             pre_close = safe_float(fields[2])
             change_pct = None
@@ -1184,7 +1180,7 @@ class AkshareFetcher(BaseFetcher):
             # 9-28:买卖五档 30:时间戳 31:涨跌额 32:涨跌幅(%) 33:最高 34:最低 35:收盘/成交量/成交额
             # 36:成交量(手) 37:成交额(万) 38:换手率(%) 39:市盈率 43:振幅(%)
             # 44:流通市值(亿) 45:总市值(亿) 46:市净率 47:涨停价 48:跌停价 49:量比
-            # 使用 realtime_types.py 中的统一转换函数
+            # 使用 types.py 中的统一转换函数
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=fields[1] if len(fields) > 1 else "",
@@ -1297,7 +1293,7 @@ class AkshareFetcher(BaseFetcher):
             
             row = row.iloc[0]
             
-            # 使用 realtime_types.py 中的统一转换函数
+            # 使用 types.py 中的统一转换函数
             # ETF 行情数据构建
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
@@ -1381,7 +1377,7 @@ class AkshareFetcher(BaseFetcher):
             
             row = row.iloc[0]
             
-            # 使用 realtime_types.py 中的统一转换函数
+            # 使用 types.py 中的统一转换函数
             # 港股行情数据构建
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
@@ -1410,183 +1406,6 @@ class AkshareFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[API错误] 获取港股 {stock_code} 实时行情失败: {e}")
             circuit_breaker.record_failure(source_key, str(e))
-            return None
-    
-    def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
-        """
-        获取筹码分布数据
-        
-        数据来源：ak.stock_cyq_em()
-        包含：获利比例、平均成本、筹码集中度
-        
-        注意：ETF/指数没有筹码分布数据，会直接返回 None
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            ChipDistribution 对象（最新一天的数据），获取失败返回 None
-        """
-        import akshare as ak
-
-        # 美股没有筹码分布数据（Akshare 不支持）
-        if _is_us_code(stock_code):
-            logger.debug(f"[API跳过] {stock_code} 是美股，无筹码分布数据")
-            return None
-
-        # 港股没有筹码分布数据（stock_cyq_em 是 A 股专属接口）
-        if _is_hk_code(stock_code):
-            logger.debug(f"[API跳过] {stock_code} 是港股，无筹码分布数据")
-            return None
-
-        # ETF/指数没有筹码分布数据
-        if _is_etf_code(stock_code):
-            logger.debug(f"[API跳过] {stock_code} 是 ETF/指数，无筹码分布数据")
-            return None
-        
-        try:
-            # 防封禁策略
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-            
-            logger.info(f"[API调用] ak.stock_cyq_em(symbol={stock_code}) 获取筹码分布...")
-            import time as _time
-            api_start = _time.time()
-            
-            df = ak.stock_cyq_em(symbol=stock_code)
-            
-            api_elapsed = _time.time() - api_start
-            
-            if df.empty:
-                logger.warning(f"[API返回] ak.stock_cyq_em 返回空数据, 耗时 {api_elapsed:.2f}s")
-                return None
-            
-            logger.info(f"[API返回] ak.stock_cyq_em 成功: 返回 {len(df)} 天数据, 耗时 {api_elapsed:.2f}s")
-            logger.debug(f"[API返回] 筹码数据列名: {list(df.columns)}")
-            
-            # 取最新一天的数据
-            latest = df.iloc[-1]
-            
-            # 使用 realtime_types.py 中的统一转换函数
-            chip = ChipDistribution(
-                code=stock_code,
-                date=str(latest.get('日期', '')),
-                profit_ratio=safe_float(latest.get('获利比例')),
-                avg_cost=safe_float(latest.get('平均成本')),
-                cost_90_low=safe_float(latest.get('90成本-低')),
-                cost_90_high=safe_float(latest.get('90成本-高')),
-                concentration_90=safe_float(latest.get('90集中度')),
-                cost_70_low=safe_float(latest.get('70成本-低')),
-                cost_70_high=safe_float(latest.get('70成本-高')),
-                concentration_70=safe_float(latest.get('70集中度')),
-            )
-            
-            logger.info(f"[筹码分布] {stock_code} 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
-                       f"平均成本={chip.avg_cost}, 90%集中度={chip.concentration_90:.2%}, "
-                       f"70%集中度={chip.concentration_70:.2%}")
-            return chip
-            
-        except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
-            return None
-    
-    def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
-        """
-        获取增强数据（历史K线 + 实时行情 + 筹码分布）
-        
-        Args:
-            stock_code: 股票代码
-            days: 历史数据天数
-            
-        Returns:
-            包含所有数据的字典
-        """
-        result = {
-            'code': stock_code,
-            'daily_data': None,
-            'realtime_quote': None,
-            'chip_distribution': None,
-        }
-        
-        # 获取日线数据
-        try:
-            df = self.get_daily_data(stock_code, days=days)
-            result['daily_data'] = df
-        except Exception as e:
-            logger.error(f"获取 {stock_code} 日线数据失败: {e}")
-        
-        # 获取实时行情
-        result['realtime_quote'] = self.get_realtime_quote(stock_code)
-        
-        # 获取筹码分布
-        result['chip_distribution'] = self.get_chip_distribution(stock_code)
-        
-        return result
-
-    def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
-        """
-        获取主要指数实时行情 (新浪接口)，仅支持 A 股
-        """
-        if region != "cn":
-            return None
-        import akshare as ak
-
-        # 主要指数代码映射
-        indices_map = {
-            'sh000001': '上证指数',
-            'sz399001': '深证成指',
-            'sz399006': '创业板指',
-            'sh000688': '科创50',
-            'sh000016': '上证50',
-            'sh000300': '沪深300',
-        }
-
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            # 使用 akshare 获取指数行情（新浪财经接口）
-            df = ak.stock_zh_index_spot_sina()
-
-            results = []
-            if df is not None and not df.empty:
-                for code, name in indices_map.items():
-                    # 查找对应指数
-                    row = df[df['代码'] == code]
-                    if row.empty:
-                        # 尝试带前缀查找
-                        row = df[df['代码'].str.contains(code)]
-
-                    if not row.empty:
-                        row = row.iloc[0]
-                        current = safe_float(row.get('最新价', 0))
-                        prev_close = safe_float(row.get('昨收', 0))
-                        high = safe_float(row.get('最高', 0))
-                        low = safe_float(row.get('最低', 0))
-
-                        # 计算振幅
-                        amplitude = 0.0
-                        if prev_close > 0:
-                            amplitude = (high - low) / prev_close * 100
-
-                        results.append({
-                            'code': code,
-                            'name': name,
-                            'current': current,
-                            'change': safe_float(row.get('涨跌额', 0)),
-                            'change_pct': safe_float(row.get('涨跌幅', 0)),
-                            'open': safe_float(row.get('今开', 0)),
-                            'high': high,
-                            'low': low,
-                            'prev_close': prev_close,
-                            'volume': safe_float(row.get('成交量', 0)),
-                            'amount': safe_float(row.get('成交额', 0)),
-                            'amplitude': amplitude,
-                        })
-            return results
-
-        except Exception as e:
-            logger.error(f"[Akshare] 获取指数行情失败: {e}")
             return None
 
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
@@ -1714,66 +1533,6 @@ class AkshareFetcher(BaseFetcher):
             
         return stats
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
-        """
-        获取行业板块涨跌榜
-
-        数据源优先级：
-        1. 东财接口 (ak.stock_board_industry_name_em)
-        2. 新浪接口 (ak.stock_sector_spot)
-        """
-        import akshare as ak
-
-        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
-            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
-
-            # 涨幅前n
-            top = df.nlargest(n, change_col)
-            top_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
-                for _, row in top.iterrows()
-            ]
-
-            bottom = df.nsmallest(n, change_col)
-            bottom_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
-                for _, row in bottom.iterrows()
-            ]
-            return top_sectors, bottom_sectors
-        
-        # 优先东财接口
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ak.stock_board_industry_name_em() 获取板块排行...")
-            df = ak.stock_board_industry_name_em()
-            if df is not None and not df.empty:
-                change_col = '涨跌幅'
-                name = '板块名称'
-                return _get_rank_top_n(df, change_col, name, n)
-            
-        except Exception as e:
-            logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {e}，尝试新浪接口")
-
-        # 东财失败后，尝试新浪接口
-        try:
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-
-            logger.info("[API调用] ak.stock_sector_spot() 获取行业板块排行(新浪)...")
-            df = ak.stock_sector_spot(indicator='行业')
-            if df is None or df.empty:
-                return None
-            change_col = '涨跌幅'
-            name = '板块'
-            return _get_rank_top_n(df, change_col, name, n)
-        
-        except Exception as e:
-            logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
-            return None
-
     def get_sector_pct_map(self) -> Dict[str, float]:
         """获取全量行业板块当日涨跌幅 {板块名: 涨跌幅%}。
 
@@ -1818,114 +1577,3 @@ class AkshareFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[Akshare] 东财接口获取板块行情也失败: {e}")
             return {}
-
-
-if __name__ == "__main__":
-    # 测试代码
-    logging.basicConfig(level=logging.DEBUG)
-    
-    fetcher = AkshareFetcher()
-    
-    # 测试普通股票
-    print("=" * 50)
-    print("测试普通股票数据获取")
-    print("=" * 50)
-    try:
-        df = fetcher.get_daily_data('600519')  # 茅台
-        print(f"[股票] 获取成功，共 {len(df)} 条数据")
-        print(df.tail())
-    except Exception as e:
-        print(f"[股票] 获取失败: {e}")
-    
-    # 测试 ETF 基金
-    print("\n" + "=" * 50)
-    print("测试 ETF 基金数据获取")
-    print("=" * 50)
-    try:
-        df = fetcher.get_daily_data('512400')  # 有色龙头ETF
-        print(f"[ETF] 获取成功，共 {len(df)} 条数据")
-        print(df.tail())
-    except Exception as e:
-        print(f"[ETF] 获取失败: {e}")
-    
-    # 测试 ETF 实时行情
-    print("\n" + "=" * 50)
-    print("测试 ETF 实时行情获取")
-    print("=" * 50)
-    try:
-        quote = fetcher.get_realtime_quote('512880')  # 证券ETF
-        if quote:
-            print(f"[ETF实时] {quote.name}: 价格={quote.price}, 涨跌幅={quote.change_pct}%")
-        else:
-            print("[ETF实时] 未获取到数据")
-    except Exception as e:
-        print(f"[ETF实时] 获取失败: {e}")
-    
-    # 测试港股历史数据
-    print("\n" + "=" * 50)
-    print("测试港股历史数据获取")
-    print("=" * 50)
-    try:
-        df = fetcher.get_daily_data('00700')  # 腾讯控股
-        print(f"[港股] 获取成功，共 {len(df)} 条数据")
-        print(df.tail())
-    except Exception as e:
-        print(f"[港股] 获取失败: {e}")
-    
-    # 测试港股实时行情
-    print("\n" + "=" * 50)
-    print("测试港股实时行情获取")
-    print("=" * 50)
-    try:
-        quote = fetcher.get_realtime_quote('00700')  # 腾讯控股
-        if quote:
-            print(f"[港股实时] {quote.name}: 价格={quote.price}, 涨跌幅={quote.change_pct}%")
-        else:
-            print("[港股实时] 未获取到数据")
-    except Exception as e:
-        print(f"[港股实时] 获取失败: {e}")
-
-    # 测试市场统计
-    print("\n" + "=" * 50)
-    print("Testing get_market_stats (akshare)")
-    print("=" * 50)
-    try:
-        stats = fetcher.get_market_stats()
-        if stats:
-            print(f"Market Stats successfully computed:")
-            print(f"Up: {stats['up_count']} (Limit Up: {stats['limit_up_count']})")
-            print(f"Down: {stats['down_count']} (Limit Down: {stats['limit_down_count']})")
-            print(f"Flat: {stats['flat_count']}")
-            print(f"Total Amount: {stats['total_amount']:.2f} 亿 (Yi)")
-        else:
-            print("Failed to compute market stats.")
-    except Exception as e:
-        print(f"Failed to compute market stats: {e}")
-
-    # 测试筹码分布数据
-    print("\n" + "=" * 50)
-    print("测试筹码分布数据获取")
-    print("=" * 50)
-    try:
-        chip = fetcher.get_chip_distribution('600519')  # 茅台
-    except Exception as e:
-        print(f"[筹码分布] 获取失败: {e}")
-
-    # 测试行业板块排名
-    print("\n" + "=" * 50)
-    print("测试行业板块排名获取")
-    print("=" * 50)
-    try:
-        rankings = fetcher.get_sector_rankings(n=5)
-        if rankings:
-            top, bottom = rankings
-            print("涨幅榜 Top 5:")
-            for sector in top:
-                print(f"{sector['name']}: {sector['change_pct']}%")
-            print("\n跌幅榜 Top 5:")
-            for sector in bottom:
-                print(f"{sector['name']}: {sector['change_pct']}%")
-        else:
-            print("未获取到行业板块排名数据")
-    except Exception as e:
-        print(f"[行业板块排名] 获取失败: {e}")

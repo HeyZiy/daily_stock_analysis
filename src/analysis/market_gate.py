@@ -5,9 +5,10 @@
 ===================================
 
 职责：
-1. _check_hard_intercept(): 硬拦截层，检查极端环境
-2. check_market_gate(): 4 项门控 + 硬拦截，判断是否允许开仓
-3. _detect_regime(): 根据均线状态判断市场结构（5 级）
+1. fetch_gate_inputs(): 【入口层调用】取门控所需外部数据（指数日线/成交额/涨跌停）
+2. check_market_gate(gate_inputs): 纯判定——4 项门控 + 硬拦截，判断是否允许开仓
+3. _check_hard_intercept(): 硬拦截层，检查极端环境
+4. _detect_regime(): 根据均线状态判断市场结构（5 级）
 
 门控条件（≥2 项通过才开仓）：
 ① 上证收盘 > MA20
@@ -24,7 +25,7 @@
 
 import logging
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -152,11 +153,69 @@ def _check_hard_intercept(
     return False, ""
 
 
-def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
+def fetch_gate_inputs(fm) -> Dict[str, Any]:
     """
-    市场环境门控 + 硬拦截
+    【入口层调用】获取门控所需的全部外部数据，供 check_market_gate 纯判定使用。
+
+    数据需求：
+    - 上证指数日线（data_provider.bars.get_index_daily；①②b 及硬拦截/均线判定用）
+    - 两市成交额（fm.get_market_stats；②a 及成交额冰点硬拦截用）
+    - 涨跌停家数（akshare 涨跌停池；③ 及千股跌停硬拦截用）
+
+    单项获取失败不影响其他项（判定层对缺失数据逐项降级）。
+    """
+    inputs: Dict[str, Any] = {
+        "index_df": None,
+        "total_amount_yi": 0.0,
+        "limit_up": 0,
+        "limit_down": 0,
+        "zt_fetched": False,
+    }
+
+    # akshare 导入一次即可；导入失败时指数日线与涨跌停两项一起降级（成交额项不依赖它）
+    try:
+        import akshare as ak
+    except Exception:
+        ak = None
+
+    if ak is not None:
+        try:
+            from data_provider.bars import get_index_daily
+            index_df = get_index_daily("sh000001")
+            if index_df is not None and len(index_df) >= 20:
+                inputs["index_df"] = index_df
+        except Exception as e:
+            logger.warning(f"获取上证指数日线失败: {e}")
+
+        try:
+            today_str = date.today().strftime("%Y%m%d")
+            zt_df = ak.stock_zt_pool_em(date=today_str)
+            if zt_df is not None and not zt_df.empty:
+                inputs["limit_up"] = len(zt_df)
+                dt_df = ak.stock_zt_pool_dtgc_em(date=today_str)
+                inputs["limit_down"] = len(dt_df) if dt_df is not None else 0
+                inputs["zt_fetched"] = True
+        except Exception as e:
+            logger.warning(f"获取涨跌停数据失败: {e}")
+
+    try:
+        market_stats = fm.get_market_stats() if fm is not None else None
+        if market_stats:
+            inputs["total_amount_yi"] = market_stats.get('total_amount', 0) or 0.0
+    except Exception as e:
+        logger.warning(f"获取两市成交额失败: {e}")
+
+    return inputs
+
+
+def check_market_gate(gate_inputs: Dict[str, Any]) -> Tuple[bool, Dict[str, bool], str, str, bool]:
+    """
+    市场环境门控 + 硬拦截（纯判定；外部数据由入口层 fetch_gate_inputs 取好传入）
 
     先执行硬拦截，再执行 4 项门控检查。
+
+    Args:
+        gate_inputs: fetch_gate_inputs() 的返回
 
     Returns:
         can_trade           — 是否允许开仓
@@ -173,18 +232,14 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
     }
     met_count = 0
     details: List[str] = []
-    index_df = None
-    total_amount_yi = 0.0
-    limit_up = 0
-    limit_down = 0
+    index_df = gate_inputs.get("index_df")
+    total_amount_yi = gate_inputs.get("total_amount_yi", 0.0)
+    limit_up = gate_inputs.get("limit_up", 0)
+    limit_down = gate_inputs.get("limit_down", 0)
 
     try:
-        import akshare as ak
-
-        # ── 获取上证指数日线数据 ──
-        index_df = ak.stock_zh_index_daily(symbol="sh000001")
         if index_df is not None and len(index_df) >= 20:
-            index_df = index_df.sort_values('date').reset_index(drop=True)
+            index_df = index_df.copy()
             index_df['ma20'] = index_df['close'].rolling(window=20).mean()
             latest = index_df.iloc[-1]
             idx_close = latest['close']
@@ -198,16 +253,7 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
             else:
                 details.append(f"❌ 上证{idx_close:.0f} ≤ MA20{idx_ma20:.0f}")
 
-            # ②a 两市成交额 ≥ 1.5 万亿（DataFetcherManager 全市场统计）
-            try:
-                from data_provider.base import DataFetcherManager
-                fm = DataFetcherManager()
-                market_stats = fm.get_market_stats()
-                if market_stats:
-                    total_amount_yi = market_stats.get('total_amount', 0)
-            except Exception:
-                total_amount_yi = 0.0
-
+            # ②a 两市成交额 ≥ 1.5 万亿（数据来自 fetch_gate_inputs）
             if total_amount_yi >= 15000:
                 conditions["两市成交额≥1.5万亿"] = True
                 met_count += 1
@@ -228,28 +274,19 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
                 else:
                     details.append(f"❌ 沪市成交量{latest_vol/1e8:.1f}亿股 ≤ 20日均量{avg_vol/1e8:.1f}亿股")
 
-        # ── ③ 涨停 ≥ 30 且涨停 > 跌停 × 1.5 ──
-        limit_up = 0
-        limit_down = 0
-        try:
-            today_str = date.today().strftime("%Y%m%d")
-            zt_df = ak.stock_zt_pool_em(date=today_str)
-            if zt_df is not None and not zt_df.empty:
-                limit_up = len(zt_df)
-                dt_df = ak.stock_zt_pool_dtgc_em(date=today_str)
-                limit_down = len(dt_df) if dt_df is not None else 0
-
-                up_ok = limit_up >= 30
-                ratio_ok = limit_up > limit_down * 1.5
-                if up_ok and ratio_ok:
-                    conditions["涨停≥30且>跌停×1.5"] = True
-                    met_count += 1
-                    details.append(f"✅ 涨停{limit_up}家(≥30) > 跌停{limit_down}家")
-                elif not up_ok:
-                    details.append(f"❌ 涨停{limit_up}家 < 30（数量不足）")
-                else:
-                    details.append(f"❌ 涨停{limit_up}家 ≤ 跌停{limit_down}家×1.5（比值不足）")
-        except Exception:
+        # ── ③ 涨停 ≥ 30 且涨停 > 跌停 × 1.5（数据来自 fetch_gate_inputs）──
+        if gate_inputs.get("zt_fetched"):
+            up_ok = limit_up >= 30
+            ratio_ok = limit_up > limit_down * 1.5
+            if up_ok and ratio_ok:
+                conditions["涨停≥30且>跌停×1.5"] = True
+                met_count += 1
+                details.append(f"✅ 涨停{limit_up}家(≥30) > 跌停{limit_down}家")
+            elif not up_ok:
+                details.append(f"❌ 涨停{limit_up}家 < 30（数量不足）")
+            else:
+                details.append(f"❌ 涨停{limit_up}家 ≤ 跌停{limit_down}家×1.5（比值不足）")
+        else:
             details.append("⚠️ 获取涨跌停数据失败，跳过此项")
 
     except Exception as e:
@@ -267,7 +304,7 @@ def check_market_gate() -> Tuple[bool, Dict[str, bool], str, str, bool]:
 
     # ── 门控判定 ──
     # 先判定市场状态（均线结构），再结合门控项数决定是否开仓
-    regime = _detect_regime(index_df if index_df is not None else None, met_count)
+    regime = _detect_regime(index_df, met_count)
 
     if regime == "trending_down":
         # 均线空头时无论门控通过多少项都不开仓：

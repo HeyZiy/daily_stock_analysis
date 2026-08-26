@@ -94,14 +94,6 @@ class NotificationService(EmailSender):
         """
         config = get_config()
 
-        # Markdown 转图片（Issue #289）
-        self._markdown_to_image_channels = set(
-            getattr(config, 'markdown_to_image_channels', []) or []
-        )
-        self._markdown_to_image_max_chars = getattr(
-            config, 'markdown_to_image_max_chars', 15000
-        )
-
         # 仅分析结果摘要（Issue #262）：true 时只推送汇总，不含个股详情
 
 
@@ -167,36 +159,11 @@ class NotificationService(EmailSender):
             logger.warning("通知服务不可用，跳过推送")
             return False
 
-        # Markdown to image (Issue #289): convert once if email channel needs it.
-        image_bytes = None
-        if 'email' in self._markdown_to_image_channels:
-            from src.notify.md2img import markdown_to_image
-            image_bytes = markdown_to_image(
-                content, max_chars=self._markdown_to_image_max_chars
-            )
-            if image_bytes:
-                logger.info("Markdown 已转换为图片，将向邮件发送图片")
-            else:
-                try:
-                    from src.config import get_config
-                    engine = getattr(get_config(), "md2img_engine", "wkhtmltoimage")
-                except Exception:
-                    engine = "wkhtmltoimage"
-                hint = (
-                    "npm i -g markdown-to-file" if engine == "markdown-to-file"
-                    else "wkhtmltopdf (apt install wkhtmltopdf / brew install wkhtmltopdf)"
-                )
-                logger.warning(
-                    "Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
-                    hint,
-                )
-
         success_count = 0
         fail_count = 0
 
         for channel in self._available_channels:
             channel_name = ChannelDetector.get_channel_name(channel)
-            use_image = 'email' in self._markdown_to_image_channels and image_bytes is not None
             try:
                 if channel == NotificationChannel.EMAIL:
                     receivers = None
@@ -204,12 +171,7 @@ class NotificationService(EmailSender):
                         receivers = self.get_all_email_receivers()
                     elif email_stock_codes and self._stock_email_groups:
                         receivers = self.get_receivers_for_stocks(email_stock_codes)
-                    if use_image:
-                        result = self._send_email_with_inline_image(
-                            image_bytes, receivers=receivers
-                        )
-                    else:
-                        result = self.send_to_email(content, receivers=receivers)
+                    result = self.send_to_email(content, receivers=receivers)
                 elif channel == NotificationChannel.FEISHU:
                     result = self._send_feishu(content)
                 else:

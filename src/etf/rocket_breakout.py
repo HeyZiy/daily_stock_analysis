@@ -10,16 +10,20 @@ ETF 火箭 — 卫星仓量价突破引擎
 三要素共振：
   1. 价能 —— 60 日新高或 20 日箱体平台突破，当日涨幅 3% ~ 9.5%
   2. 量能 —— 当日量 ≥ 5 日均量 × 2 且 ≥ 20 日均量 × 1.5
-  3. 性价比 —— 行业 PE 分位 < 60%（软条件），风险回报比 ≥ 2（结构保证）
+  3. 性价比 —— 行业 PE 分位 < 90%（数据缺失时降为评分惩罚而非硬剔），风险回报比 ≥ 2（结构保证）
 
 退出（条件满足其一）：
   - 止损：价格 < 买入价 × 0.93
   - 止盈：+15% 减半，+25% 清仓
   - 动能衰竭：连续 3 日收盘 < MA5
   - 时间止损：10 个交易日无新高
-  - 环境锁仓：PE 分位 ≥ 60% 或市场门控硬拦截 → 全清
+  - 环境熔断：市场门控硬拦截 → 全清；持仓行业 PE 分位 ≥ 90% → 逐只清仓
 
 仓位：总资产 10% 预算，最多 2 只，等权。
+
+PE 口径：只看持仓/候选 ETF 自身的行业 PE 分位（逐只判定），
+全市场 PE 分位不穿透卫星仓（核心仓估值门控专用），避免进攻臂与
+防守臂被同一个信号同步关掉。
 
 无状态设计：持仓起点不从本地文件记，全部以模拟仓为事实来源——
 成本价用持仓接口的 cost_price，买入日期用历史委托接口（get_last_buy_dates）
@@ -31,6 +35,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from src.etf.sector_rotation import RotationOrder
 from src.mx.position_utils import filter_held_positions, get_last_buy_dates_safe
 
 logger = logging.getLogger(__name__)
@@ -42,7 +47,7 @@ BREAKOUT_CHANGE_MAX = 9.5       # 突破日涨幅上限（%，排除一字板/�
 VOL_MULT_5D = 2.0               # 量能：≥ 5 日均量倍数
 VOL_MULT_20D = 1.5              # 量能：≥ 20 日均量倍数
 SCORE_THRESHOLD = 70            # 火箭评分入围线（满分约 95）
-PE_LOCK = 60.0                  # 行业 PE 分位锁仓线
+PE_LOCK = 90.0                  # 行业 PE 分位锁仓线（逐只判定，仅极端高估才熔断）
 STOP_LOSS = 0.93                # 止损线（买入价 × 0.93）
 TAKE_PROFIT_HALF = 1.15         # 止盈减半线
 TAKE_PROFIT_ALL = 1.25          # 止盈清仓线
@@ -51,13 +56,23 @@ TIME_STOP_DAYS = 10             # N 个交易日无新高退出
 PLATFORM_AMPLITUDE = 0.25       # 箱体定义：近 20 日振幅上限
 
 
+def _sell_order(code: str, name: str, count: int, price: float, reason: str) -> RotationOrder:
+    """构造卫星仓卖出订单 + 同步追加 reason 文案（返回 RotationOrder，调用方 append 到 orders）。"""
+    return RotationOrder(code=code, name=name, action="sell", shares=count,
+                         price=price, amount=count * price, reason=reason)
+
+
 # ── 单 ETF 分析 ──
 
-def analyze_etf(code: str, name: str = "") -> Optional[dict]:
-    """拉取单只 ETF 日线并计算火箭信号 + 动量观察分。失败返回 None。"""
-    from src.etf.sector_rotation import _fetch_etf_daily
+def analyze_etf(code: str, name: str = "", df: Optional[pd.DataFrame] = None) -> Optional[dict]:
+    """拉取单只 ETF 日线并计算火箭信号 + 动量观察分。失败返回 None。
 
-    df = _fetch_etf_daily(code)
+    df 可注入外部日线（date/open/high/low/close/volume，日期升序），
+    供指数等非 ETF 标的复用同一套规则（rocket_check.py 用）。
+    """
+    if df is None:
+        from src.etf import sector_rotation
+        df = sector_rotation._fetch_etf_daily(code, None)
     if df is None or len(df) < 65:
         return None
 
@@ -229,7 +244,7 @@ def analyze_universe() -> List[dict]:
 # ── 决策 ──
 
 def check_pe_lock(pe_pct: Optional[float]) -> bool:
-    """PE 分位 ≥ 60% → 卫星仓锁仓。数据缺失时视为未锁。"""
+    """行业 PE 分位 ≥ 90% → 该 ETF 锁仓清仓。数据缺失时视为未锁。"""
     return pe_pct is not None and pe_pct >= PE_LOCK
 
 
@@ -246,16 +261,17 @@ def _entry_low_from_kline(res: dict, entry_date: str) -> float:
 
 
 def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dict[str, str],
-                      pe_pct: Optional[float], hard_intercept: bool) -> Tuple[List[dict], List[str]]:
-    """生成卫星卖出订单（按退出规则逐个检查，持仓起点全部来自模拟仓数据）。"""
-    from src.etf.sector_rotation import RotationOrder
+                      hard_intercept: bool) -> Tuple[List[dict], List[str]]:
+    """生成卫星卖出订单（按退出规则逐个检查，持仓起点全部来自模拟仓数据）。
 
+    PE 锁仓按持仓 ETF 自身行业 PE 分位逐只判定（≥90% 清仓）；
+    全市场 PE 分位不再穿透卫星仓，硬拦截仍为全市场级熔断。
+    """
     result_map = {r["code"]: r for r in results}
     universe_codes = set(result_map)
 
     orders: List[RotationOrder] = []
     reasons: List[str] = []
-    locked = check_pe_lock(pe_pct) or hard_intercept
 
     for p in filter_held_positions(positions):
         code = p.get("code", "")
@@ -269,43 +285,42 @@ def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dic
         name = p.get("name", "") or code
         res = result_map[code]
 
-        if locked:
-            reason = "PE 分位 ≥60% 锁仓" if not hard_intercept else "市场门控硬拦截"
-            orders.append(RotationOrder(code=code, name=name, action="sell", shares=count,
-                                        price=price, amount=count * price, reason=reason))
+        # 0. 环境熔断：硬拦截全清；行业 PE 分位 ≥90% 逐只清仓
+        if hard_intercept:
+            orders.append(_sell_order(code, name, count, price, "市场门控硬拦截"))
+            reasons.append(f"{name}({code}) 市场门控硬拦截 清仓")
+            continue
+        if check_pe_lock(res.get("pe_pct")):
+            reason = f"行业 PE 分位 ≥{PE_LOCK:.0f}% 锁仓"
+            orders.append(_sell_order(code, name, count, price, reason))
             reasons.append(f"{name}({code}) {reason} 清仓")
             continue
 
         # 1. 止损：现价跌破持仓成本 × 0.93 或买入日最低价（仅在有起点数据时判定）
         if entry_price > 0 and price < entry_price * STOP_LOSS:
-            orders.append(RotationOrder(code=code, name=name, action="sell", shares=count,
-                                        price=price, amount=count * price, reason=f"止损（低于成本×{STOP_LOSS}）"))
+            orders.append(_sell_order(code, name, count, price, f"止损（低于成本×{STOP_LOSS}）"))
             reasons.append(f"{name}({code}) 止损清仓")
             continue
         if entry_low > 0 and price < entry_low:
-            orders.append(RotationOrder(code=code, name=name, action="sell", shares=count,
-                                        price=price, amount=count * price, reason="跌破买入日最低价"))
+            orders.append(_sell_order(code, name, count, price, "跌破买入日最低价"))
             reasons.append(f"{name}({code}) 跌破买入日最低价 清仓")
             continue
 
         # 2. 止盈（相对持仓成本）
         if entry_price > 0:
             if price >= entry_price * TAKE_PROFIT_ALL:
-                orders.append(RotationOrder(code=code, name=name, action="sell", shares=count,
-                                            price=price, amount=count * price, reason="止盈 +25% 清仓"))
+                orders.append(_sell_order(code, name, count, price, "止盈 +25% 清仓"))
                 reasons.append(f"{name}({code}) 止盈清仓")
                 continue
             if price >= entry_price * TAKE_PROFIT_HALF and count >= 200:
                 half = int(count // 2 // 100) * 100
-                orders.append(RotationOrder(code=code, name=name, action="sell", shares=half,
-                                            price=price, amount=half * price, reason="止盈 +15% 减半"))
+                orders.append(_sell_order(code, name, half, price, "止盈 +15% 减半"))
                 reasons.append(f"{name}({code}) 止盈减半 {half}股")
                 continue
 
         # 3. 动能衰竭：连续 3 日收盘 < MA5
         if res.get("below_ma5_3d"):
-            orders.append(RotationOrder(code=code, name=name, action="sell", shares=count,
-                                        price=price, amount=count * price, reason=f"连续{MA5_EXIT_DAYS}日收盘<MA5"))
+            orders.append(_sell_order(code, name, count, price, f"连续{MA5_EXIT_DAYS}日收盘<MA5"))
             reasons.append(f"{name}({code}) 动能衰竭清仓")
             continue
 
@@ -317,20 +332,21 @@ def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dic
             except Exception:
                 since = df.tail(TIME_STOP_DAYS)
             if len(since) >= TIME_STOP_DAYS and float(since["high"].max()) < entry_price * 1.001:
-                orders.append(RotationOrder(code=code, name=name, action="sell", shares=count,
-                                            price=price, amount=count * price, reason=f"{TIME_STOP_DAYS}个交易日无新高"))
+                orders.append(_sell_order(code, name, count, price, f"{TIME_STOP_DAYS}个交易日无新高"))
                 reasons.append(f"{name}({code}) 时间止损退出")
 
     return orders, reasons
 
 
 def build_buy_orders(results: List[dict], held_codes: set, total_assets: float,
-                     satellite_mv: float, pe_pct: Optional[float], hard_intercept: bool,
+                     satellite_mv: float, hard_intercept: bool,
                      regime: str) -> Tuple[List[dict], List[str]]:
-    """生成卫星买入订单（突破信号 + 环境许可 + 预算内排名前 N）。"""
-    from src.etf.sector_rotation import RotationOrder
+    """生成卫星买入订单（突破信号 + 环境许可 + 预算内排名前 N）。
 
-    if hard_intercept or check_pe_lock(pe_pct):
+    环境许可 = 非硬拦截 + regime 为 trending_up / weak_up；
+    估值过滤用候选 ETF 自身行业 PE 分位 < 90%，不用全市场 PE。
+    """
+    if hard_intercept:
         return [], []
     if regime not in ("trending_up", "weak_up"):
         return [], []
@@ -368,7 +384,7 @@ def build_buy_orders(results: List[dict], held_codes: set, total_assets: float,
 # ── 汇总 ──
 
 def analyze_satellite(positions: List[dict], total_assets: float,
-                      pe_pct: Optional[float], hard_intercept: bool, regime: str,
+                      hard_intercept: bool, regime: str,
                       client=None) -> dict:
     """卫星仓全流程：分析 → 卖出 → 买入。不执行交易，只出指令。
 
@@ -378,6 +394,9 @@ def analyze_satellite(positions: List[dict], total_assets: float,
 
     标的口径与再平衡引擎一致：卫星标的 = ETF_INDUSTRY_MAP − 核心基准代码，
     核心仓标的（如 516560 养老ETF）不纳入卫星买卖与市值统计。
+
+    PE 口径：逐只行业 PE（≥90% 锁仓/禁买），全市场 PE 不参与卫星决策。
+    locked 仅反映硬拦截（全市场级熔断）。
     """
     results = analyze_universe()
 
@@ -390,7 +409,7 @@ def analyze_satellite(positions: List[dict], total_assets: float,
     sat_codes = get_rotation_universe_codes()
     results = [r for r in results if r["code"] in sat_codes]
 
-    sells, sell_notes = build_sell_orders(results, positions, entry_map, pe_pct, hard_intercept)
+    sells, sell_notes = build_sell_orders(results, positions, entry_map, hard_intercept)
 
     universe_codes = {r["code"] for r in results}
     satellite_mv = sum(float(p.get("market_value", 0) or 0)
@@ -399,7 +418,7 @@ def analyze_satellite(positions: List[dict], total_assets: float,
                   if p.get("code", "") in universe_codes and int(p.get("count", 0) or 0) > 0}
 
     buys, buy_notes = build_buy_orders(results, held_codes, total_assets, satellite_mv,
-                                       pe_pct, hard_intercept, regime)
+                                       hard_intercept, regime)
 
     # 行业轮动观察排名（同一份分析结果，只输出不动手）
     ranked = sorted([r for r in results if r["rot_score"] > 0],
@@ -414,5 +433,5 @@ def analyze_satellite(positions: List[dict], total_assets: float,
         "ranked": ranked,
         "satellite_mv": satellite_mv,
         "held_codes": held_codes,
-        "locked": check_pe_lock(pe_pct) or hard_intercept,
+        "locked": hard_intercept,
     }
