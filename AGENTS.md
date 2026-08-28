@@ -15,7 +15,7 @@ src/analysis/report.py          ← Markdown 日报生成
 src/analysis/strategy/          ← 信号检测(signal_detector.py)、剔除规则(removal_rules.py)、
                                    卖出信号(sell_rules.py，读妙想持仓输出减仓/清仓建议)
 src/etf/                        ← ETF 配置：估值门控(allocation_gate)、再平衡(rebalancer)、
-                                   卫星仓火箭引擎(rocket_breakout)、因子封装(amazing_factors)、基准(config)
+                                   卫星仓行业动量轮动(industry_momentum)、因子封装(amazing_factors)、基准(config)
 src/notify/                     ← 多渠道通知（飞书/邮件）
 src/mx/                         ← 妙想模拟仓 API 客户端 + 持仓公共工具(position_utils)
 data_provider/                  ← 多源行情数据（AmazingData > tushare > akshare > efinance > baostock > yfinance）
@@ -47,7 +47,7 @@ python trend_analysis.py --debug --no-notify
 
 # ETF 长期配置（每周一 9:35）
 python etf_observe.py                    # 周度观察报告（只出建议，不下单）
-python etf_observe.py --execute          # 执行统一批次：核心再平衡 + 卫星火箭调仓（妙想市价单）
+python etf_observe.py --execute          # 执行统一批次：核心再平衡 + 卫星动量调仓（妙想市价单）
 python etf_observe.py --force            # 跳过交易日检查（调试用）
 python etf_observe.py --no-notify --debug
 ```
@@ -63,7 +63,7 @@ No test suite, no lint/typecheck commands.
 ## Design Decisions
 
 - **文档分工**：
-  - `strategy/*.md` — 项目自身的策略设计文档（总览/趋势/ETF 配置/红火箭），**必须与代码同步**。改代码中的阈值、交易逻辑、信号优先级时，必须在同一提交里更新对应策略文档；反之改文档时也要同步代码。 
+  - `strategy/*.md` — 项目自身的策略设计文档（总览/趋势/ETF 配置/行业动量轮动），**必须与代码同步**。改代码中的阈值、交易逻辑、信号优先级时，必须在同一提交里更新对应策略文档；反之改文档时也要同步代码。 
     - `strategy/overview.md`：总览
 - 当文档与代码出现矛盾、或需要决策阈值/逻辑时，**以投资/交易逻辑为准**思考什么对策略合理，而不是"文档说了什么"或"代码现在怎么写的"。
 

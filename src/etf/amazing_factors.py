@@ -227,6 +227,93 @@ def get_industry_mcap_share(code: str, lookback: int = PERCENTILE_LOOKBACK) -> O
         return None
 
 
+def get_margin_sentiment(lookback: int = 500) -> Optional[dict]:
+    """
+    全市场两融情绪（杠杆资金）指标，供风格周报判断风险偏好。
+
+    数据源同一日期最多有 3 条记录（多口径/多市场拼接，量级差百倍），
+    按日取最大值去重后再过滤量级断裂（单日变化超 20 倍视为口径切换，
+    非市场行为）。
+
+    Returns:
+        {'balance': 两融余额(元), 'chg_5d': 5日变化率(%), 'chg_20d': 20日变化率(%),
+         'pct': 余额自身近 lookback 日分位(0-100)} 或 None
+    """
+    info = _info()
+    if info is None:
+        return None
+    try:
+        df = info.get_margin_summary(local_path=LOCAL_DATA_DIR, is_local=False)
+        if df is None or df.empty or "SUM_MARGIN_TRADE_BALANCE" not in df.columns:
+            return None
+        df = df.copy()
+        df["BAL"] = pd.to_numeric(df["SUM_MARGIN_TRADE_BALANCE"], errors="coerce")
+        bal = df.groupby("TRADE_DATE")["BAL"].max().sort_index().dropna()
+        if len(bal) < 30:
+            return None
+        # 量级断裂过滤：相对前 250 日中位数偏离超 20 倍的记录视为口径噪声
+        med = bal.rolling(250, min_periods=30).median().shift(1)
+        bal = bal[(bal / med > 0.05) & (bal / med < 20)]
+        if len(bal) < 30:
+            return None
+        cur = float(bal.iloc[-1])
+        chg_5d = (cur / float(bal.iloc[-6]) - 1) * 100 if len(bal) >= 6 else None
+        chg_20d = (cur / float(bal.iloc[-21]) - 1) * 100 if len(bal) >= 21 else None
+        window = bal.tail(lookback)
+        pct = float((window < cur).mean() * 100)
+        return {"balance": cur, "chg_5d": round(chg_5d, 2) if chg_5d is not None else None,
+                "chg_20d": round(chg_20d, 2) if chg_20d is not None else None,
+                "pct": round(pct, 1)}
+    except Exception as e:
+        logger.warning(f"获取两融情绪失败: {e}")
+        return None
+
+
+def get_etf_share_flow(codes: List[str], lookback_days: int = 20) -> Dict[str, dict]:
+    """
+    ETF 份额变化率（资金流观察字段）：份额增减 = 场内申赎方向。
+
+    Args:
+        codes: 标准 6 位 ETF 代码列表
+        lookback_days: 变化率窗口（自然交易日）
+
+    Returns:
+        {code: {'share': 最新总份额(万份), 'chg': 近 N 日变化率(%)}}；缺数据的代码不在结果中
+    """
+    info = _info()
+    if info is None or not codes:
+        return {}
+    try:
+        from data_provider.fetchers.amazingdata_fetcher import _code_to_tgw_format
+        tgw_codes = [c for c in (_code_to_tgw_format(x) for x in codes) if c]
+        if not tgw_codes:
+            return {}
+        data = info.get_fund_share(tgw_codes, local_path=LOCAL_DATA_DIR, is_local=False)
+        result: Dict[str, dict] = {}
+        for tgw_code, df in (data or {}).items():
+            if df is None or df.empty:
+                continue
+            col = "TOTAL_SHARE" if "TOTAL_SHARE" in df.columns else "FUND_SHARE"
+            if col not in df.columns:
+                continue
+            s = pd.to_numeric(df[col], errors="coerce").dropna()
+            if len(s) < 2:
+                continue
+            chg = None
+            if len(s) >= lookback_days + 1:
+                base = float(s.iloc[-1 - lookback_days])
+                if base > 0:
+                    ratio = float(s.iloc[-1]) / base
+                    # 超 50 倍的跳变视为口径切换（真实申购潮极少超此量级）
+                    if 0.02 < ratio < 50:
+                        chg = round((ratio - 1) * 100, 1)
+            result[str(tgw_code).split(".")[0]] = {"share": round(float(s.iloc[-1]), 0), "chg": chg}
+        return result
+    except Exception as e:
+        logger.warning(f"获取 ETF 份额流失败: {e}")
+        return {}
+
+
 def get_treasury_yield_y10() -> Optional[float]:
     """
     获取 10 年期国债收益率（%）。

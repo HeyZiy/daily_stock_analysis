@@ -6,7 +6,7 @@
 
 项目 ETF 与 A股指数日线的唯一取数入口，替代各模块散落的 akshare 直连
 （rebalancer / market_gate / style_state / allocation_gate /
-data_collector / rocket_check 此前各自拼 sh/sz 前缀、各自选接口）。
+data_collector / momentum_check 此前各自拼 sh/sz 前缀、各自选接口）。
 
 设计原则：
 - 函数名即类型：get_etf_daily / get_index_daily 两个入口，调用方自己声明要什么，

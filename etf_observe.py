@@ -10,7 +10,7 @@ ETF 周度观察报告 — 估值导向
   1. 市场估值概览（全市场 PE + 国债收益率）
   2. 买入优先级（按 PE 分位排序，越便宜越靠前）
   3. 持仓对照与调仓建议（核心口径）
-  4. 卫星仓 — ETF 火箭（放量突破候选 + 调仓建议）
+  4. 卫星仓 — 行业动量轮动（关注池 + 突破候选 + 调仓建议）
   5. 动量观察（卫星仓背景排名，仅观察不交易）
   6. 自动调仓执行结果（仅 --execute：卫星卖 → 核心卖 → 核心买 → 卫星买）
 
@@ -175,8 +175,8 @@ def _compute_allocation():
     )
     _should, reason = rebalancer.should_rebalance(orders, total_deviation, gate_state="")
 
-    # 卫星仓 — ETF 火箭（只出指令，执行统一走 _execute_batch）
-    rocket = None
+    # 卫星仓 — 行业动量轮动（只出指令，执行统一走 _execute_batch）
+    satellite = None
     regime, hard_intercept = "chaos", False
     try:
         from src.analysis.market_gate import check_market_gate, fetch_gate_inputs
@@ -185,9 +185,9 @@ def _compute_allocation():
     except Exception:
         logger.warning("市场门控获取失败，卫星仓禁买", exc_info=True)
     try:
-        from src.etf import rocket_breakout as rocket_mod
+        from src.etf import industry_momentum as sat_mod
 
-        rocket = rocket_mod.analyze_satellite(positions, total_assets,
+        satellite = sat_mod.analyze_satellite(positions, total_assets,
                                               hard_intercept, regime, client=client)
     except Exception:
         logger.warning("卫星仓分析失败", exc_info=True)
@@ -209,7 +209,7 @@ def _compute_allocation():
         "orders": orders,
         "total_deviation": total_deviation,
         "reason": reason,
-        "rocket": rocket,
+        "satellite": satellite,
         "regime": regime,
         "hard_intercept": hard_intercept,
     }
@@ -313,35 +313,63 @@ def _holding_overview(alloc=None) -> str:
 
 # ── 卫星仓与动量观察 ──
 
-def _satellite_overview(rocket: dict) -> str:
-    """卫星仓 — ETF 火箭：信号候选 + 持仓 + 建议"""
-    if not rocket:
+def _satellite_overview(satellite: dict) -> str:
+    """卫星仓 — 行业动量轮动：关注池/突破候选 + 持仓 + 建议"""
+    if not satellite:
         return ""
 
-    lines = ["## 四、卫星仓 — ETF 火箭", ""]
-    lines.append(f"预算 10% | 最多 2 只 | 当前卫星持仓市值 {rocket['satellite_mv']:,.0f} 元")
-    if rocket["locked"]:
-        lines.append("🔒 市场门控硬拦截，卫星仓锁定（禁买、清仓）")
+    lines = ["## 四、卫星仓 — 行业动量轮动", ""]
+    lines.append(f"预算 10% | 最多 2 只 | 当前卫星持仓市值 {satellite['satellite_mv']:,.0f} 元")
+    if satellite["locked"]:
+        lines.append("🔒 市场门控硬拦截：卫星仓禁新开仓（已持仓不动，降杠杆门控）")
     lines.append("")
 
-    lines.append("### 火箭信号候选（放量突破）")
+    lines.append("### 突破候选（关注池内放量突破）")
     lines.append("")
-    cands = sorted([r for r in rocket["results"] if r["breakout"]],
-                   key=lambda x: x["rocket_score"], reverse=True)
+    cands = sorted([r for r in satellite["results"] if r["breakout"]],
+                   key=lambda x: x["momentum_score"], reverse=True)
     if not cands:
         lines.append("无放量突破信号")
     for r in cands:
         pe = f"{r['pe_pct']:.0f}%" if r.get("pe_pct") is not None else "—"
         lines.append(
-            f"- {r['name']}({r['code']}) 评分{r['rocket_score']} 涨幅{r['chg_pct']:+.1f}% "
+            f"- {r['name']}({r['code']}) 动量分{r['momentum_score']} 排名{r['momentum_rank']} 涨幅{r['chg_pct']:+.1f}% "
             f"量比5日{r['vol_ratio_5']:.1f}/20日{r['vol_ratio_20']:.1f} 行业PE分位{pe}"
         )
+    lines.append("")
+
+    # 资金流观察：关注池 + 持仓 ETF 的份额 20 日变化（申赎方向，仅观察不交易）
+    lines.append("### 资金流观察（份额 20 日变化，仅观察）")
+    lines.append("")
+    watch_codes = {r["code"] for r in satellite["results"] if r.get("pool")}
+    watch_codes |= {r["code"] for r in cands}
+    watch_codes |= set(satellite.get("held_codes") or [])
+    try:
+        from src.etf.amazing_factors import get_etf_share_flow
+        share_flow = get_etf_share_flow(sorted(watch_codes)) if watch_codes else {}
+    except Exception:
+        share_flow = {}
+    name_map = {r["code"]: r["name"] for r in satellite["results"]}
+    flow_lines = []
+    for code in sorted(watch_codes):
+        flow = share_flow.get(code)
+        if not flow or flow.get("chg") is None:
+            continue
+        chg = flow["chg"]
+        flag = "🔥 申购潮" if chg >= 30 else ("❄️ 赎回潮" if chg <= -20 else "")
+        flow_lines.append((chg, f"- {name_map.get(code, code)}({code}) 份额20日 {chg:+.1f}% {flag}"))
+    if flow_lines:
+        for _, line in sorted(flow_lines, key=lambda x: x[0], reverse=True):
+            lines.append(line)
+        lines.append("> 份额暴增 = 场内资金追入（与价格动量同向时警惕拥挤）；份额骤减 = 资金离场")
+    else:
+        lines.append("无份额变动数据")
     lines.append("")
 
     lines.append("### 持仓与建议")
     lines.append("")
     manual_codes = {
-        o.code for o in (list(rocket.get("sells", [])) + list(rocket.get("buy_orders", [])))
+        o.code for o in (list(satellite.get("sells", [])) + list(satellite.get("buy_orders", [])))
         if is_mx_untradable(o.code)
     }
 
@@ -350,30 +378,30 @@ def _satellite_overview(rocket: dict) -> str:
         mark = " ⚠️ 需手动" if m and m.group(1) in manual_codes else ""
         return f"- {prefix}：{n}{mark}"
 
-    if rocket["sell_notes"]:
-        for n in rocket["sell_notes"]:
+    if satellite["sell_notes"]:
+        for n in satellite["sell_notes"]:
             lines.append(_note_line(n, "🔴 卖出"))
-    if rocket["buy_notes"]:
-        for n in rocket["buy_notes"]:
+    if satellite["buy_notes"]:
+        for n in satellite["buy_notes"]:
             lines.append(_note_line(n, "🟢 买入"))
-    if not rocket["sell_notes"] and not rocket["buy_notes"]:
+    if not satellite["sell_notes"] and not satellite["buy_notes"]:
         lines.append("无调仓建议")
     lines.append("")
     return "\n".join(lines)
 
 
-def _momentum_observe(rocket: dict) -> str:
+def _momentum_observe(satellite: dict) -> str:
     """动量观察：卫星仓背景排名（只观察，不交易）"""
-    if not rocket:
+    if not satellite:
         return ""
-    ranked = rocket["ranked"][:6]
+    ranked = satellite["ranked"][:6]
     if not ranked:
         return ""
     lines = ["## 五、动量观察（卫星仓背景，仅排名不交易）", ""]
     for i, r in enumerate(ranked, 1):
         pe = f"PE分位{r['pe_pct']:.0f}%" if r.get("pe_pct") is not None else "PE—"
         lines.append(
-            f"{i}. {r['name']}({r['code']}) 动量分{r['rot_score']} "
+            f"{i}. {r['name']}({r['code']}) 动量分{r['momentum_score']} "
             f"20日{r['ret_20d']:+.1f}% 5日{r['ret_5d']:+.1f}% {pe}"
         )
     lines.append("")
@@ -385,15 +413,15 @@ def _momentum_observe(rocket: dict) -> str:
 def _execute_batch(alloc: dict) -> str:
     """执行调仓批次（卫星卖 → 核心卖 → 核心买 → 卫星买，带全批次资金校验）"""
     from src.mx.client import MXMoniClient, is_mx_untradable, MX_UNTRADABLE_REASON
-    from src.etf import rocket_breakout as rocket_mod
+    from src.etf import industry_momentum as sat_mod
 
     core_orders = alloc["orders"]
-    rocket = alloc.get("rocket")
+    satellite = alloc.get("satellite")
     total_assets = alloc["total_assets"]
     avail_balance = alloc["balance"].get("avail_balance") or 0
 
-    sat_sells = list(rocket["sells"]) if rocket else []
-    sat_buys = list(rocket["buy_orders"]) if rocket else []
+    sat_sells = list(satellite["sells"]) if satellite else []
+    sat_buys = list(satellite["buy_orders"]) if satellite else []
     core_sells = [o for o in core_orders if o.action == "sell"]
     core_buys = [o for o in core_orders if o.action == "buy"]
     sells = sat_sells + core_sells
@@ -424,10 +452,10 @@ def _execute_batch(alloc: dict) -> str:
 
     # 安全校验 3：卫星买入不超 10% 预算
     if sat_buys:
-        budget = total_assets * rocket_mod.SATELLITE_BUDGET_RATIO
+        budget = total_assets * sat_mod.SATELLITE_BUDGET_RATIO
         sat_buy_total = sum(o.amount for o in sat_buys)
         sat_sell_total = sum(o.amount for o in sat_sells)
-        if sat_buy_total > budget - rocket["satellite_mv"] + sat_sell_total:
+        if sat_buy_total > budget - satellite["satellite_mv"] + sat_sell_total:
             lines.append(f"❌ 中止执行：卫星买入 {sat_buy_total:,.0f} 元 超预算上限 {budget:,.0f} 元")
             return "\n".join(lines)
 
@@ -504,13 +532,13 @@ def _generate_report(execute: bool = False) -> str:
         _market_overview(),
         _buy_priority(),
         holding_section,
-        _satellite_overview(alloc.get("rocket")),
-        _momentum_observe(alloc.get("rocket")),
+        _satellite_overview(alloc.get("satellite")),
+        _momentum_observe(alloc.get("satellite")),
     ]
 
-    rocket = alloc.get("rocket")
+    satellite = alloc.get("satellite")
     has_orders = bool(alloc and alloc["orders"])
-    has_sat_orders = bool(rocket and (rocket["sells"] or rocket["buy_orders"]))
+    has_sat_orders = bool(satellite and (satellite["sells"] or satellite["buy_orders"]))
     if execute and alloc and (has_orders or has_sat_orders):
         sections.append(_execute_batch(alloc))
 

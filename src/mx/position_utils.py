@@ -6,7 +6,7 @@
 
 无状态设计：持仓起点（成本/买入日/股数）一律以模拟仓为事实来源，
 趋势卖出信号（src/analysis/strategy/sell_rules.py）与 ETF 火箭引擎
-（src/etf/rocket_breakout.py）共用以下推导逻辑。
+（src/etf/industry_momentum.py）共用以下推导逻辑。
 """
 
 import logging
@@ -33,7 +33,7 @@ def get_last_buy_dates_safe(client) -> Dict[str, str]:
     """安全推导持仓买入日期 {code: YYYY-MM-DD}。
 
     历史委托接口不可用时降级返回空字典，调用方跳过日期类规则
-    （与 rocket_breakout「无状态设计」口径一致）。
+    （与 industry_momentum「无状态设计」口径一致）。
     """
     try:
         return client.get_last_buy_dates()

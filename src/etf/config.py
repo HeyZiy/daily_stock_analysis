@@ -37,7 +37,7 @@ class AssetAllocation:
 
 # ── 中性基准配置 ──
 # 核心仓位：长期持有，gate 驱动战术偏移 + 再平衡
-# 卫星仓（ETF 火箭，标的集见 get_rotation_universe_codes）独立于核心仓，动态扫描 ETF_INDUSTRY_MAP，不属于中性基准
+# 卫星仓（行业动量轮动，标的集见 get_rotation_universe_codes）独立于核心仓，动态扫描 ETF_INDUSTRY_MAP，不属于中性基准
 
 CORE_BASELINE: List[AssetAllocation] = [
     # ── A股宽基 ──

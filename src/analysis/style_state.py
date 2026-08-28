@@ -531,8 +531,13 @@ def _advice_section(snap: dict, state: str, strong_cand_streak: int) -> List[str
     return lines
 
 
-def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List[str]) -> str:
-    """生成周报 markdown。state 为 update_state 输出的落盘状态 dict。"""
+def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List[str],
+                 margin: Optional[dict] = None) -> str:
+    """生成周报 markdown。state 为 update_state 输出的落盘状态 dict。
+
+    margin 为全市场两融情绪（get_margin_sentiment），仅周度实盘路径传入；
+    backtest 传 None 跳过该节（历史两融序列不回放）。
+    """
     state_str = state.get("state")
     label = STATE_LABELS.get(state_str, state_str)
     streak_txt = f"（持续第 {state['state_streak']} 周）" if state.get("state_streak", 1) > 1 else ""
@@ -582,6 +587,18 @@ def build_report(snap: dict, state: dict, strong_cand_streak: int, reasons: List
     lines.append("")
     lines.append(f"- 大小盘（中证1000 − 沪深300）: 20d **{_format_pct(snap['size20'])}** | 60d {_format_pct(snap['size60'])}")
     lines.append(f"- 市场宽度（行业站上 MA20 占比）: **{snap['breadth']:.0%}**")
+    if margin:
+        chg = []
+        if margin.get("chg_5d") is not None:
+            chg.append(f"5d {margin['chg_5d']:+.1f}%")
+        if margin.get("chg_20d") is not None:
+            chg.append(f"20d {margin['chg_20d']:+.1f}%")
+        lines.append(f"- 杠杆资金情绪（全市场两融余额）: {_format_pct(margin.get('pct'))} 分位"
+                     + ("（" + " | ".join(chg) + "）" if chg else ""))
+        if margin.get("pct") is not None and margin["pct"] >= 90:
+            lines.append("  - ⚠️ 两融余额处于历史极高分位：杠杆情绪过热，退潮期风险放大")
+        elif margin.get("pct") is not None and margin["pct"] <= 10:
+            lines.append("  - 两融余额处于历史极低分位：杠杆出清较充分，底部区特征之一")
     lines.append("")
     lines.append("风格簇收益（等权）：")
     lines.append("")
@@ -633,7 +650,13 @@ def run_weekly() -> Tuple[str, dict]:
     state, streaks, reasons = classify(snap, prev)
     new_state = update_state(snap, state, streaks, prev)
     save_state(new_state)
-    report = build_report(snap, new_state, streaks.get("strong_cand", 0), reasons)
+    # 两融情绪为独立增强项，失败不阻断周报
+    try:
+        from src.etf.amazing_factors import get_margin_sentiment
+        margin = get_margin_sentiment()
+    except Exception:
+        margin = None
+    report = build_report(snap, new_state, streaks.get("strong_cand", 0), reasons, margin=margin)
     return report, new_state
 
 

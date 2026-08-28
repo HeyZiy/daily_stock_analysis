@@ -31,19 +31,19 @@
       "added_by": "system"
     },
     {
-      "id": "rocket_etf_breakout",
-      "name": "量价爆发突破（红色火箭·ETF版）",
+      "id": "industry_momentum",
+      "name": "行业动量轮动（卫星仓）",
       "category": "动量策略",
-      "description": "卫星仓战术策略：在行业ETF清单中捕捉放量突破首日（60日新高/平台突破+涨幅3%-9.5%，量≥5日均量×2且≥20日均量×1.5，行业PE分位<90%），评分≥70买入，10%预算最多2只等权。退出：-7%止损、+15%减半/+25%清仓、3日破MA5、10日不新高、行业PE≥90%（逐只判定）或硬拦截全清。",
+      "description": "卫星仓战术策略（动量程序行业袖子）：周频截面动量排名选行业（相对沪深300的20/60日超额+量比，前3进关注池），池内ETF放量突破才建仓，10%预算最多2只。退出：动量证伪（相对强度转负/连续2次跌出前5/破MA20缩量/灾难止损-12%）、行业PE≥90%锁仓、市值拥挤度≥95%熔断；硬拦截只禁新开仓不清仓（降杠杆门控）。",
       "suitable_regimes": [
         "trending_up",
         "weak_up"
       ],
-      "existing_implementation": "src/etf/rocket_breakout.py + etf_observe.py 统一执行批次",
+      "existing_implementation": "src/etf/industry_momentum.py + etf_observe.py 统一执行批次",
       "source": "user_suggested",
       "created_at": "2026-08-15",
       "added_by": "user",
-      "doc_ref": "strategy/rocket_breakout.md"
+      "doc_ref": "strategy/industry_momentum.md"
     },
     {
       "id": "high_dividend_defense",
@@ -287,7 +287,7 @@
       "created_at": "2026-08-15",
       "added_by": "user",
       "existing_implementation": null,
-      "doc_ref": "strategy/rocket_breakout.md"
+      "doc_ref": "strategy/industry_momentum.md"
     }
   ]
 }

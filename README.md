@@ -1,6 +1,6 @@
 # Regime Trader — A股智能交易系统
 
-个人 A 股量化交易系统：趋势波段、ETF 长期配置 + 卫星仓火箭 + LLM 策略规划器（自进化）。
+个人 A 股量化交易系统：趋势波段、ETF 长期配置 + 卫星仓行业动量轮动 + LLM 策略规划器（自进化）。
 
 - **数据**：个股多源行情（AmazingData > tushare > akshare > efinance > baostock > yfinance，自动降级容错）；ETF / A股指数走 akshare 单源（`data_provider/bars.py`）
 - **交易**：妙想模拟仓 API（`src/mx/`）
@@ -14,9 +14,9 @@
 | 账户 | 策略 | 状态 | 文档 |
 |---|---|---|---|
 | 主账户 | ETF 长期配置（核心仓） | 运行中 | [etf_allocation.md](strategy/etf_allocation.md) |
-| 主账户 | 量价爆发突破 — ETF 火箭（卫星仓） | 已实现待验证 | [rocket_breakout.md](strategy/rocket_breakout.md) |
+| 主账户 | 行业动量轮动（卫星仓） | 运行中 | [industry_momentum.md](strategy/industry_momentum.md) |
 | 子账户 | 趋势交易（趋势回调买入） | 运行中 | [trend_strategy.md](strategy/trend_strategy.md) |
-| 子账户 | 量价爆发突破（个股版） | 待审批 | [rocket_breakout.md](strategy/rocket_breakout.md) |
+| 子账户 | 量价爆发突破（个股版） | 待审批 | [industry_momentum.md](strategy/industry_momentum.md) 附录 |
 
 > 高股息防御、现金管理、黄金对冲是 ETF 配置内部的资产类别（红利ETF / CASH / 黄金ETF）。
 
@@ -25,7 +25,7 @@
 | 脚本 | 定位 | 频率 |
 |---|---|---|
 | `trend_analysis.py` | 趋势交易：市场门控 + 分歧回踩买点检测 + 观察池维护 + 次日交易计划 | 每交易日 13:30 |
-| `etf_observe.py` | ETF 周度观察 + `--execute` 统一调仓（核心再平衡 + 卫星火箭） | 每周一 9:35 |
+| `etf_observe.py` | ETF 周度观察 + `--execute` 统一调仓（核心再平衡 + 卫星动量调仓） | 每周一 9:35 |
 | `strategy_planner.py` | 双 Agent 策略规划器：市场诊断 → 策略适配推荐 → 实现检查 → 自进化提议 | 每周六 9:00 |
 
 ## 快速开始
@@ -97,7 +97,7 @@ data_provider/           数据接入层
   ├ codes.py / types.py  契约：代码判定 / 统一类型（STANDARD_COLUMNS + 异常 + 实时类型）
   └ fetchers/            数据源实现（base + akshare / efinance / tushare / yfinance / baostock / amazingdata）
 src/analysis/            市场门控 market_gate、报告生成 report、信号检测 signal_detector、剔除规则 removal_rules
-src/etf/                 ETF 配置：估值门控、再平衡、火箭引擎、因子封装、基准配置
+src/etf/                 ETF 配置：估值门控、再平衡、行业动量轮动、因子封装、基准配置
 src/mx/                  妙想模拟仓 API 客户端
 src/notify/              多渠道通知（飞书/钉钉/企业微信/邮件）
 src/strategy_planner/    策略规划器（数据采集 + 双 Agent + 实现检查）

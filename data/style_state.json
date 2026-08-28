@@ -1,16 +1,16 @@
 {
-  "updated": "2026-08-24",
-  "data_date": "2026-08-21",
+  "updated": "2026-08-29",
+  "data_date": "2026-08-28",
   "state": "forming",
-  "state_streak": 1,
+  "state_streak": 2,
   "strong_cand_streak": 0,
   "vacuum_cand_streak": 0,
   "prev_top5": [
-    "综合",
     "有色金属",
-    "社会服务",
-    "纺织服饰",
-    "传媒"
+    "综合",
+    "电子",
+    "通信",
+    "煤炭"
   ],
   "history": [
     {
@@ -33,6 +33,28 @@
         "社会服务",
         "纺织服饰",
         "传媒"
+      ]
+    },
+    {
+      "date": "2026-08-28",
+      "state": "forming",
+      "state_streak": 2,
+      "strong_cand_streak": 0,
+      "vacuum_cand_streak": 0,
+      "prev_top5": [],
+      "dominant": "周期资源 · 小盘占优",
+      "spread": 6.25,
+      "retention": null,
+      "top5_ret5": 0.63,
+      "size20": 8.44,
+      "size60": -2.47,
+      "breadth": 0.645,
+      "top5": [
+        "有色金属",
+        "综合",
+        "电子",
+        "通信",
+        "煤炭"
       ]
     }
   ]
