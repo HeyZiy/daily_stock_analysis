@@ -9,8 +9,6 @@
 |---|---|---|---|---|
 | 主账户 | ETF 长期配置（核心仓） | 90% | 运行中 | [etf_allocation.md](./etf_allocation.md) |
 | 主账户 | 量价爆发突破 — ETF 火箭（卫星仓） | 10% 预算 | 已实现待验证 | [rocket_breakout.md](./rocket_breakout.md) |
-| 主账户 | 行业轮动 | 0%（观察工具，不交易） | 观察 | [sector_rotation.md](./sector_rotation.md) |
-| 子账户 | 趋势交易（趋势回调买入） | 固定 1 万元 | 运行中 | [trend_strategy.md](./trend_strategy.md) |
-| 子账户 | 量价爆发突破（红色火箭个股版） | 0%（设计稿，待审批） | 待审批 | [rocket_breakout.md](./rocket_breakout.md) |
+| 子账户 | 趋势交易（趋势回调买入） | 固定 | 运行中 | [trend_strategy.md](./trend_strategy.md) |
 
 > 高股息防御、现金管理、黄金对冲不是独立策略，是 ETF 配置内部的资产类别（红利ETF / CASH / 黄金ETF），见 etf_allocation.md。

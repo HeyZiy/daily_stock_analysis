@@ -318,7 +318,7 @@ def get_etf_industry(etf_code: str) -> Optional[str]:
 
 
 def get_industry_etf_universe() -> List[dict]:
-    """行业轮动引擎的动态标的清单：[{'code', 'name', 'industry'}, ...]"""
+    """卫星仓引擎的动态标的清单：[{'code', 'name', 'industry'}, ...]"""
     return [
         {"code": e["code"], "name": e["name"], "industry": e["industry"]}
         for e in _ETF_INDUSTRY_ENTRIES

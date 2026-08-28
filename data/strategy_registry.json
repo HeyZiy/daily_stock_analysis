@@ -31,20 +31,6 @@
       "added_by": "system"
     },
     {
-      "id": "sector_rotation",
-      "name": "行业轮动",
-      "category": "动量策略",
-      "description": "扫描全行业ETF清单，按20日+5日动量+均线+量能打分排名，仅观察不交易",
-      "suitable_regimes": [
-        "trending_up",
-        "weak_up"
-      ],
-      "existing_implementation": "src/etf/sector_rotation.py（观察工具，周报排名）",
-      "source": "builtin",
-      "created_at": "2026-08-08",
-      "added_by": "system"
-    },
-    {
       "id": "rocket_etf_breakout",
       "name": "量价爆发突破（红色火箭·ETF版）",
       "category": "动量策略",

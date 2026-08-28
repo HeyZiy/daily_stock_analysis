@@ -15,15 +15,14 @@ src/analysis/report.py          ← Markdown 日报生成
 src/analysis/strategy/          ← 信号检测(signal_detector.py)、剔除规则(removal_rules.py)、
                                    卖出信号(sell_rules.py，读妙想持仓输出减仓/清仓建议)
 src/etf/                        ← ETF 配置：估值门控(allocation_gate)、再平衡(rebalancer)、
-                                   卫星仓火箭引擎(rocket_breakout)、行业轮动观察(sector_rotation)、
-                                   因子封装(amazing_factors)、基准(config)
+                                   卫星仓火箭引擎(rocket_breakout)、因子封装(amazing_factors)、基准(config)
 src/notify/                     ← 多渠道通知（飞书/邮件）
 src/mx/                         ← 妙想模拟仓 API 客户端 + 持仓公共工具(position_utils)
 data_provider/                  ← 多源行情数据（AmazingData > tushare > akshare > efinance > baostock > yfinance）
 
 data/strategy_registry.json     ← 策略池（LLM 可提议新策略进待审批区，--approve 转正）
 data/strategy_todo.json         ← 策略待办库（Agent2 发现推荐策略无实现时登记，含 doc_ref）
-data/etf_industry_map.json      ← 行业 ETF 清单（申万行业 → 首选/备选 ETF，卫星仓/轮动引擎标的池）
+data/etf_industry_map.json      ← 行业 ETF 清单（申万行业 → 首选/备选 ETF，卫星仓标的池）
 ```
 
 ## Commands
@@ -51,9 +50,6 @@ python etf_observe.py                    # 周度观察报告（只出建议，�
 python etf_observe.py --execute          # 执行统一批次：核心再平衡 + 卫星火箭调仓（妙想市价单）
 python etf_observe.py --force            # 跳过交易日检查（调试用）
 python etf_observe.py --no-notify --debug
-
-# 行业轮动观察（引擎未接入交易，只输出排名）
-python -m src.etf.sector_rotation
 ```
 
 No test suite, no lint/typecheck commands.
@@ -67,14 +63,14 @@ No test suite, no lint/typecheck commands.
 ## Design Decisions
 
 - **文档分工**：
-  - `strategy/*.md` — 项目自身的策略设计文档（总览/趋势/ETF 配置/行业轮动/红火箭），**必须与代码同步**。改代码中的阈值、交易逻辑、信号优先级时，必须在同一提交里更新对应策略文档；反之改文档时也要同步代码。 
+  - `strategy/*.md` — 项目自身的策略设计文档（总览/趋势/ETF 配置/红火箭），**必须与代码同步**。改代码中的阈值、交易逻辑、信号优先级时，必须在同一提交里更新对应策略文档；反之改文档时也要同步代码。 
     - `strategy/overview.md`：总览
 - 当文档与代码出现矛盾、或需要决策阈值/逻辑时，**以投资/交易逻辑为准**思考什么对策略合理，而不是"文档说了什么"或"代码现在怎么写的"。
 
 ## Key Conventions
 
 - Chinese docstrings and comments throughout
-- `data/` holds cached state (e.g. `market_gate_ice_days.json`, `rotation_state.json`)
+- `data/` holds cached state (e.g. `market_gate_ice_days.json`, `style_state.json`)
 - Logging via `src/logging_config.py:setup_logging()` — console + file + debug file handlers
 - All stock codes normalized via `data_provider.base:canonical_stock_code()`
 

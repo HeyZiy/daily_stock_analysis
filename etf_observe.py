@@ -11,7 +11,7 @@ ETF 周度观察报告 — 估值导向
   2. 买入优先级（按 PE 分位排序，越便宜越靠前）
   3. 持仓对照与调仓建议（核心口径）
   4. 卫星仓 — ETF 火箭（放量突破候选 + 调仓建议）
-  5. 行业轮动观察（动量排名，不交易）
+  5. 动量观察（卫星仓背景排名，仅观察不交易）
   6. 自动调仓执行结果（仅 --execute：卫星卖 → 核心卖 → 核心买 → 卫星买）
 
 卖出警示（极端条件触发：全市场 PE>90% + 行业 PE>95% + 拥挤）。
@@ -253,12 +253,12 @@ def _holding_overview(alloc=None) -> str:
 
     assets_line = f"**总资产**: {total_assets:,.0f} 元"
     if rotation_mv > 0:
-        assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **轮动持仓**: {rotation_mv:,.0f} 元"
+        assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **卫星持仓**: {rotation_mv:,.0f} 元"
     lines.append(f"{assets_line} | {gate_line}")
     lines.append(f"**再平衡结论**: {reason}")
     lines.append("")
 
-    # 当前持仓占比（核心口径：轮动持仓独立预算，不参与核心偏离计算）
+    # 当前持仓占比（核心口径：卫星持仓独立预算，不参与核心偏离计算）
     current_map: dict = {}
     for p in alloc["core_positions"]:
         mv = float(p.get("market_value", 0) or 0)
@@ -284,10 +284,10 @@ def _holding_overview(alloc=None) -> str:
             action = f"{'🟢买' if order.action == 'buy' else '🔴卖'} {order.quantity}股"
         lines.append(f"| {asset.name} | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} |")
 
-    # 轮动持仓与基准外持仓提示
+    # 卫星持仓与基准外持仓提示
     if rotation_positions:
         lines.append("")
-        lines.append("> 轮动持仓（独立预算，未纳入核心对照）："
+        lines.append("> 卫星持仓（独立预算，未纳入核心对照）："
                      + "、".join(f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions))
     baseline_codes = {a.code for a in rebalancer.baseline}
     extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
@@ -311,7 +311,7 @@ def _holding_overview(alloc=None) -> str:
     return "\n".join(lines)
 
 
-# ── 卫星仓与轮动观察 ──
+# ── 卫星仓与动量观察 ──
 
 def _satellite_overview(rocket: dict) -> str:
     """卫星仓 — ETF 火箭：信号候选 + 持仓 + 建议"""
@@ -362,14 +362,14 @@ def _satellite_overview(rocket: dict) -> str:
     return "\n".join(lines)
 
 
-def _rotation_observe(rocket: dict) -> str:
-    """行业轮动观察：动量排名（只观察，不交易）"""
+def _momentum_observe(rocket: dict) -> str:
+    """动量观察：卫星仓背景排名（只观察，不交易）"""
     if not rocket:
         return ""
     ranked = rocket["ranked"][:6]
     if not ranked:
         return ""
-    lines = ["## 五、行业轮动观察（仅排名，不交易）", ""]
+    lines = ["## 五、动量观察（卫星仓背景，仅排名不交易）", ""]
     for i, r in enumerate(ranked, 1):
         pe = f"PE分位{r['pe_pct']:.0f}%" if r.get("pe_pct") is not None else "PE—"
         lines.append(
@@ -505,7 +505,7 @@ def _generate_report(execute: bool = False) -> str:
         _buy_priority(),
         holding_section,
         _satellite_overview(alloc.get("rocket")),
-        _rotation_observe(alloc.get("rocket")),
+        _momentum_observe(alloc.get("rocket")),
     ]
 
     rocket = alloc.get("rocket")

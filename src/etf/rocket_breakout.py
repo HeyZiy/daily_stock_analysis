@@ -31,14 +31,26 @@ PE 口径：只看持仓/候选 ETF 自身的行业 PE 分位（逐只判定）�
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.etf.sector_rotation import RotationOrder
 from src.mx.position_utils import filter_held_positions, get_last_buy_dates_safe
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RotationOrder:
+    """卫星仓调仓订单（原 sector_rotation.py 中的 RotationOrder，随轮动引擎删除并入火箭）。"""
+    code: str
+    name: str
+    action: str      # buy / sell
+    shares: int
+    price: float
+    amount: float
+    reason: str
 
 SATELLITE_BUDGET_RATIO = 0.10   # 卫星仓总仓位上限（总资产占比）
 MAX_HOLDINGS = 2                # 最多持仓数
@@ -71,8 +83,8 @@ def analyze_etf(code: str, name: str = "", df: Optional[pd.DataFrame] = None) ->
     供指数等非 ETF 标的复用同一套规则（rocket_check.py 用）。
     """
     if df is None:
-        from src.etf import sector_rotation
-        df = sector_rotation._fetch_etf_daily(code, None)
+        from data_provider import get_etf_daily
+        df = get_etf_daily(code)
     if df is None or len(df) < 65:
         return None
 
@@ -154,7 +166,7 @@ def analyze_etf(code: str, name: str = "", df: Optional[pd.DataFrame] = None) ->
 
     rocket_score = round(score_vol + score_price + score_value)
 
-    # ── 动量观察分（行业轮动排名用，口径同 sector_rotation）──
+    # ── 动量观察分（火箭内嵌的动量信号，供周报排名观察）──
     if ret_20d > 10:
         s20 = 30
     elif ret_20d > 5:
@@ -420,7 +432,7 @@ def analyze_satellite(positions: List[dict], total_assets: float,
     buys, buy_notes = build_buy_orders(results, held_codes, total_assets, satellite_mv,
                                        hard_intercept, regime)
 
-    # 行业轮动观察排名（同一份分析结果，只输出不动手）
+    # 动量观察排名（同一份分析结果，只输出不动手）
     ranked = sorted([r for r in results if r["rot_score"] > 0],
                     key=lambda r: r["rot_score"], reverse=True)
 

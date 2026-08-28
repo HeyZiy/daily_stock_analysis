@@ -1,6 +1,6 @@
 # Regime Trader — A股智能交易系统
 
-个人 A 股量化交易系统：趋势波段、ETF 长期配置、行业轮动观察 + LLM 策略规划器（自进化）。
+个人 A 股量化交易系统：趋势波段、ETF 长期配置 + 卫星仓火箭 + LLM 策略规划器（自进化）。
 
 - **数据**：个股多源行情（AmazingData > tushare > akshare > efinance > baostock > yfinance，自动降级容错）；ETF / A股指数走 akshare 单源（`data_provider/bars.py`）
 - **交易**：妙想模拟仓 API（`src/mx/`）
@@ -15,7 +15,6 @@
 |---|---|---|---|
 | 主账户 | ETF 长期配置（核心仓） | 运行中 | [etf_allocation.md](strategy/etf_allocation.md) |
 | 主账户 | 量价爆发突破 — ETF 火箭（卫星仓） | 已实现待验证 | [rocket_breakout.md](strategy/rocket_breakout.md) |
-| 主账户 | 行业轮动 | 观察工具，不交易 | [sector_rotation.md](strategy/sector_rotation.md) |
 | 子账户 | 趋势交易（趋势回调买入） | 运行中 | [trend_strategy.md](strategy/trend_strategy.md) |
 | 子账户 | 量价爆发突破（个股版） | 待审批 | [rocket_breakout.md](strategy/rocket_breakout.md) |
 
@@ -98,7 +97,7 @@ data_provider/           数据接入层
   ├ codes.py / types.py  契约：代码判定 / 统一类型（STANDARD_COLUMNS + 异常 + 实时类型）
   └ fetchers/            数据源实现（base + akshare / efinance / tushare / yfinance / baostock / amazingdata）
 src/analysis/            市场门控 market_gate、报告生成 report、信号检测 signal_detector、剔除规则 removal_rules
-src/etf/                 ETF 配置：估值门控、再平衡、火箭引擎、行业轮动、因子封装、基准配置
+src/etf/                 ETF 配置：估值门控、再平衡、火箭引擎、因子封装、基准配置
 src/mx/                  妙想模拟仓 API 客户端
 src/notify/              多渠道通知（飞书/钉钉/企业微信/邮件）
 src/strategy_planner/    策略规划器（数据采集 + 双 Agent + 实现检查）

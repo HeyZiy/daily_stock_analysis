@@ -37,7 +37,7 @@ class AssetAllocation:
 
 # ── 中性基准配置 ──
 # 核心仓位：长期持有，gate 驱动战术偏移 + 再平衡
-# 行业轮动（src/etf/sector_rotation.py）独立于核心仓，动态扫描 ETF_INDUSTRY_MAP，不属于中性基准
+# 卫星仓（ETF 火箭，标的集见 get_rotation_universe_codes）独立于核心仓，动态扫描 ETF_INDUSTRY_MAP，不属于中性基准
 
 CORE_BASELINE: List[AssetAllocation] = [
     # ── A股宽基 ──
@@ -90,10 +90,10 @@ def get_neutral_baseline() -> List[AssetAllocation]:
 
 
 def get_rotation_universe_codes() -> set:
-    """行业轮动标的代码集（剔除核心基准代码，避免与核心仓资金口径重叠）。
+    """卫星仓（非核心）标的代码集（剔除核心基准代码，避免与核心仓资金口径重叠）。
 
-    核心仓再平衡以"核心资金 = 总资产 − 轮动持仓市值"为口径，
-    轮动标的独立预算、独立进出，不参与核心偏离计算。
+    核心仓再平衡以"核心资金 = 总资产 − 卫星持仓市值"为口径，
+    卫星标的独立预算、独立进出，不参与核心偏离计算。
     """
     try:
         from src.etf.amazing_factors import ETF_INDUSTRY_MAP

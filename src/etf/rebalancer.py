@@ -157,10 +157,10 @@ class ETFRebalancer:
         return result
 
     def split_rotation_positions(self, positions: List[dict]) -> Tuple[List[dict], float, List[dict]]:
-        """拆分核心持仓与行业轮动持仓。
+        """拆分核心持仓与卫星（非核心）持仓。
 
-        轮动持仓独立预算，不参与核心仓偏离计算；
-        核心资金 = 总资产 − 轮动持仓市值。
+        卫星持仓独立预算，不参与核心仓偏离计算；
+        核心资金 = 总资产 − 卫星持仓市值。
 
         Returns:
             (core_positions, rotation_mv, rotation_positions)
@@ -180,8 +180,8 @@ class ETFRebalancer:
                 total_assets: float, gate_state: str, hard_intercept: bool) -> Tuple[List[RebalanceOrder], float]:
         """比较目标 vs 实际，生成调仓指令
 
-        资金口径：核心资金 = 总资产 − 轮动持仓市值。
-        轮动持仓独立预算，不参与核心偏离计算，也不会被核心再平衡卖出。
+        资金口径：核心资金 = 总资产 − 卫星持仓市值。
+        卫星持仓独立预算，不参与核心偏离计算，也不会被核心再平衡卖出。
 
         Returns:
             (orders, total_deviation) 调仓指令列表 + 总偏离度
@@ -326,7 +326,7 @@ class ETFRebalancer:
             rotation_names = "、".join(
                 f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions
             )
-            assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **轮动持仓**: {rotation_mv:,.0f} 元（{rotation_names}）"
+            assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **卫星持仓**: {rotation_mv:,.0f} 元（{rotation_names}）"
 
         lines = [
             f"# ETF 长期配置日报",

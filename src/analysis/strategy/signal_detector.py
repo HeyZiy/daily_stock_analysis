@@ -185,6 +185,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
 
     # 计算乖离率
     bias_ma5 = (current_price - ma5) / ma5 * 100 if ma5 > 0 else 0
+    bias_ma20 = (current_price - ma20) / ma20 * 100 if ma20 > 0 else 0
 
     # 计算当日涨跌幅（用于条件过滤 + 描述）
     pct_change = 0.0
@@ -248,6 +249,9 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         # 单日暴涨（涨停/准涨停）视为情绪过热
         if pct_change > 7.0:
             is_euphoric = True
+    # MA20 乖离过大：收盘偏离20日线过远，追高风险高
+    if bias_ma20 > 15.0:
+        is_euphoric = True
 
     # 4.4 近20日累计涨幅过大：涨幅>80% → 信号失效（追高风险极高）
     is_overextended = False
@@ -301,7 +305,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     if not meets_liquidity:
         _cond_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
     if is_euphoric:
-        _cond_fails.append(f"情绪过热(3d={recent_3d_gain:.1f}% 5d={recent_5d_gain:.1f}% 振幅={recent_max_amplitude:.1f}% 涨跌={pct_change:+.2f}%)")
+        _cond_fails.append(f"情绪过热(3d={recent_3d_gain:.1f}% 5d={recent_5d_gain:.1f}% 振幅={recent_max_amplitude:.1f}% 涨跌={pct_change:+.2f}% MA20乖离={bias_ma20:+.1f}%)")
     if is_monster:
         _cond_fails.append(f"妖股(近5日涨停{monster_limit_up}次)")
     if is_overextended:
@@ -424,7 +428,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         if not meets_liquidity:
             _s2_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
         if is_euphoric:
-            _s2_fails.append("情绪过热")
+            _s2_fails.append(f"情绪过热(MA20乖离={bias_ma20:+.1f}%)")
         if is_overextended:
             _s2_fails.append(f"近期涨幅过大(近20日{recent_20d_gain:+.1f}%)")
         logger.debug(f"  {name}({code}) 信号2不满足 | {'; '.join(_s2_fails)}")
