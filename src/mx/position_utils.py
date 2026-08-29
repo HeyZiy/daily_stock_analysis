@@ -5,7 +5,7 @@
 ===================================
 
 无状态设计：持仓起点（成本/买入日/股数）一律以模拟仓为事实来源，
-趋势卖出信号（src/analysis/strategy/sell_rules.py）与 ETF 火箭引擎
+趋势卖出信号（src/trend/sell_rules.py）与 ETF 火箭引擎
 （src/etf/industry_momentum.py）共用以下推导逻辑。
 """
 

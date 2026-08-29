@@ -13,9 +13,10 @@ numba 指标计算模块（AmazingData 算子）
 - AmazingData 未安装或导入失败时自动回退到 pandas 实现（保持 CI 可用）
 - 所有函数入参/出参均为 pandas Series，与旧逻辑兼容
 
-归属说明（2026-08-26 从 data_provider/ 迁至 src/analysis/）：
-- 本模块是纯计算（指标算子），属分析层；import AmazingData 只是用其算子库，
-  不涉及任何数据获取。数据层（data_provider）不再承担指标计算。
+归属说明（2026-08-26 从 data_provider/ 迁出，2026-08-29 定位于 src/indicators.py）：
+- 本模块是纯计算（指标算子），无交易语义、被多个策略共用，故作为根级别共享工具；
+  import AmazingData 只是用其算子库，不涉及任何数据获取。
+  数据层（data_provider）不承担指标计算。
 """
 
 import logging

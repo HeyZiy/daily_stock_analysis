@@ -71,11 +71,6 @@ class Config:
     tushare_token: Optional[str] = None
     mx_apikey: Optional[str] = None
 
-    # === AI 分析配置 ===
-    litellm_model: str = ""
-    llm_temperature: float = 0.7
-    llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
-
     # === 分析筛选 ===
     bias_threshold: float = 5.0
 

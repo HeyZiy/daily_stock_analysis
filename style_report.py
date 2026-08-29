@@ -7,7 +7,7 @@
 定位：每周六上午跑一次（用周五收盘数据），纯规则判定市场风格状态，
 不接交易引擎、不依赖 LLM。
 
-报告结构（见 src/analysis/style_state.py）：
+报告结构（见 src/market_state/style_state.py）：
   1. 风格状态（主线强势期 / 退潮期 / 真空期 / 形成中 + 主导风格）
   2. 下周怎么办（状态的投资含义：结构/战法/触发器，非交易计划）
   3. 主线明细（领涨组 Top5 / 垫底组 / 持续性指标）
@@ -82,7 +82,7 @@ def main():
     setup_logging(log_prefix="style_report", debug=args.debug)
 
     # 周六跑用周五收盘数据，不做交易日门控
-    from src.analysis.style_state import run_weekly, run_backtest
+    from src.market_state.style_state import run_weekly, run_backtest
 
     if args.backtest:
         logger.info(f"风格状态回测: 起点 {args.backtest}")

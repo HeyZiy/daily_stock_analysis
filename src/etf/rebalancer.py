@@ -5,9 +5,11 @@ ETF 再平衡引擎
 ===================================
 
 职责：
-1. 根据 gate 状态 + 中性基准 → 计算当前目标配比
-2. 比较 mx-moni 实际持仓 vs 目标 → 生成调仓指令
+1. 中性基准 → 目标配比（无偏移，动态择时已删除，见 strategy/etf_allocation.md）
+2. 比较 mx-moni 实际持仓 vs 目标 → 生成调仓指令（旧钱唯一动作）
 3. 执行调仓（通过 mx-moni 交易接口）
+
+新钱投放参考（欠配度排序）由 etf_observe 报告生成，仅建议不自动执行。
 """
 
 import logging
@@ -16,8 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.etf.config import (
     AssetAllocation, AssetType, NEUTRAL_BASELINE, PROTECTED_TYPES,
-    get_equity_total_weight, get_gate_offset, get_rebalance_threshold,
-    get_rotation_universe_codes,
+    get_rebalance_threshold, get_rotation_universe_codes,
     MIN_TRADE_DEVIATION, REBALANCE_TOTAL_THRESHOLD,
 )
 from src.mx.client import MXMoniClient
@@ -42,7 +43,6 @@ class AllocationReport:
     date: str
     gate_state: str
     hard_intercept: bool
-    gate_offset: float
     total_assets: float
     target_allocations: List[dict] = field(default_factory=list)
     current_positions: List[dict] = field(default_factory=list)
@@ -62,40 +62,13 @@ class ETFRebalancer:
 
     # ── 计算目标配比 ──
 
-    def calculate_target(self, gate_state: str = "", hard_intercept: bool = False,
-                          equity_offset: float = None) -> Dict[str, float]:
-        """计算当前目标配比
-
-        Args:
-            gate_state: 市场状态（趋势 gate 用），equity_offset 为 None 时生效
-            hard_intercept: 硬拦截标志，equity_offset 为 None 时生效
-            equity_offset: 直接指定权益偏移量，不为 None 时覆盖 gate 逻辑
+    def calculate_target(self) -> Dict[str, float]:
+        """目标配比 = 中性基准权重（无偏移；估值观点在基准里，趋势信息只影响阈值松紧）
 
         Returns:
             {code: target_weight} 目标权重（0.0 ~ 1.0）
         """
-        if equity_offset is None:
-            equity_offset = get_gate_offset(gate_state, hard_intercept)
-        offset = equity_offset
-
-        equity_total = get_equity_total_weight()
-        if equity_total <= 0:
-            logger.warning("权益类总权重为 0，无法计算偏移")
-            return {a.code: a.neutral_weight for a in self.baseline}
-
-        target: Dict[str, float] = {}
-        for asset in self.baseline:
-            if asset.asset_type == AssetType.EQUITY:
-                # 权益件比例 + 按权重分配偏移
-                target[asset.code] = asset.neutral_weight + offset * (asset.neutral_weight / equity_total)
-            elif asset.asset_type == AssetType.CASH:
-                # 现金件吸收偏移
-                target[asset.code] = asset.neutral_weight - offset
-            else:
-                # 黄金、债券不变
-                target[asset.code] = asset.neutral_weight
-
-        return target
+        return {a.code: a.neutral_weight for a in self.baseline}
 
     # ── 比较持仓 ──
 
@@ -178,17 +151,16 @@ class ETFRebalancer:
 
     def compare(self, target: Dict[str, float], positions: List[dict],
                 total_assets: float, gate_state: str, hard_intercept: bool) -> Tuple[List[RebalanceOrder], float]:
-        """比较目标 vs 实际，生成调仓指令
+        """比较目标 vs 实际，生成调仓指令（旧钱唯一动作：阈值再平衡）
 
-        资金口径：核心资金 = 总资产 − 卫星持仓市值。
-        卫星持仓独立预算，不参与核心偏离计算，也不会被核心再平衡卖出。
+        资金口径：核心资金 = 总资产（资金占比即总占比）。卫星仓与其他账户持仓
+        不在基准代码集内，不产生偏离；其资金被"现金（以及其他账户）"桶吸收。
 
         Returns:
             (orders, total_deviation) 调仓指令列表 + 总偏离度
         """
         core_positions, rotation_mv, _ = self.split_rotation_positions(positions)
-        core_assets = max(total_assets - rotation_mv, 0.0)
-        current = self._build_current_map(core_positions, core_assets)
+        current = self._build_current_map(positions, total_assets)
         # 补齐未持仓 ETF 的行情价格
         self._fill_missing_prices(current)
         threshold = get_rebalance_threshold(gate_state)
@@ -208,7 +180,7 @@ class ETFRebalancer:
             if abs(deviation) < MIN_TRADE_DEVIATION:
                 continue
 
-            amount = deviation * core_assets
+            amount = deviation * total_assets
             cur_price = cur.get("current_price", 0) or 0
 
             if deviation > 0:
@@ -286,26 +258,13 @@ class ETFRebalancer:
                          total_assets: float, orders: List[RebalanceOrder],
                          total_deviation: float,
                          gate_state: str = "", hard_intercept: bool = False,
-                         equity_offset: float = None,
                          pe_percentile: float = None, current_pe: float = None) -> str:
-        """生成 Markdown 格式的 ETF 配置报告
-
-        equity_offset/pe_percentile/current_pe 用于 PE 估值 gate 模式；
-        gate_state/hard_intercept 用于趋势 gate 模式（向后兼容）。
-        """
+        """生成 Markdown 格式的 ETF 配置报告（无偏移版，估值仅作参考展示）"""
         from datetime import datetime
 
-        core_positions, rotation_mv, rotation_positions = self.split_rotation_positions(positions)
-        core_assets = max(total_assets - rotation_mv, 0.0)
-        current = self._build_current_map(core_positions, core_assets)
+        current = self._build_current_map(positions, total_assets)
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # 选择偏移来源
-        if equity_offset is None:
-            equity_offset = get_gate_offset(gate_state, hard_intercept)
-        offset = equity_offset
-
-        # 头部信息
         if pe_percentile is not None and current_pe is not None:
             if pe_percentile < 20:
                 level = "极度低估"
@@ -322,18 +281,12 @@ class ETFRebalancer:
             gate_line = f"**Gate**: {gate_state}" + (" + 硬拦截" if hard_intercept else "")
 
         assets_line = f"**总资产**: {total_assets:,.0f} 元"
-        if rotation_mv > 0:
-            rotation_names = "、".join(
-                f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions
-            )
-            assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **卫星持仓**: {rotation_mv:,.0f} 元（{rotation_names}）"
 
         lines = [
             f"# ETF 长期配置日报",
             f"",
             f"**时间**: {now} | {gate_line}",
             assets_line,
-            f"**权益偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}% → 现金",
             f"",
             "---",
             "",

@@ -660,10 +660,12 @@ def run_weekly() -> Tuple[str, dict]:
     return report, new_state
 
 
-def run_backtest(start: str) -> str:
-    """历史回测：从 start 起逐周末重放判定（无未来函数），输出状态时间线。
+def backtest_states(start: str) -> List[dict]:
+    """历史回放状态机：从 start 起逐周末重放判定（无未来函数）。
 
-    不写状态文件、不发通知。
+    不写状态文件、不发通知。返回逐周结构化记录：
+    [{date, state, dominant, spread, retention, size20}, ...]
+    供 run_backtest 渲染与 state_attribution 归因消费。
     """
     industries = fetch_industry_daily()
     indices = fetch_index_daily()
@@ -694,6 +696,15 @@ def run_backtest(start: str) -> str:
             "retention": snap["retention"],
             "size20": snap["size20"],
         })
+    return rows
+
+
+def run_backtest(start: str) -> str:
+    """历史回测：从 start 起逐周末重放判定（无未来函数），输出状态时间线。
+
+    不写状态文件、不发通知。
+    """
+    rows = backtest_states(start)
 
     # 汇总统计
     total = len(rows)

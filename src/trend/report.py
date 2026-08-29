@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from src.analysis.strategy.signal_detector import TechnicalSignal
+from src.trend.signal_detector import TechnicalSignal
 
 logger = logging.getLogger(__name__)
 

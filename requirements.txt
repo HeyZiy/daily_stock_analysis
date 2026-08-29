@@ -25,8 +25,8 @@ numpy>=1.24.0               # 数值计算
 json-repair>=0.55.1         # JSON 修复
 pydantic>=2.0.0             # 数据验证和设置管理
 
-# AI 分析
-requests>=2.31.0            # HTTP client for direct LLM API calls
+# HTTP 客户端
+requests>=2.31.0            # 数据源 / 妙想 API / 通知渠道请求
 
 # 网络请求
 markdown2>=2.4.0            # Markdown 转 HTML

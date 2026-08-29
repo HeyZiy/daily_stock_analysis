@@ -7,12 +7,13 @@ ETF 周度观察报告 — 估值导向
 定位：每周一次，默认纯观察；`--execute` 时执行统一调仓批次。
 
 报告结构：
-  1. 市场估值概览（全市场 PE + 国债收益率）
-  2. 买入优先级（按 PE 分位排序，越便宜越靠前）
-  3. 持仓对照与调仓建议（核心口径）
-  4. 卫星仓 — 行业动量轮动（关注池 + 突破候选 + 调仓建议）
-  5. 动量观察（卫星仓背景排名，仅观察不交易）
-  6. 自动调仓执行结果（仅 --execute：卫星卖 → 核心卖 → 核心买 → 卫星买）
+  1. 市场估值概览（全市场 PE + 国债收益率，估值只服务新钱速度旋钮与参考）
+  2. 买入优先级（按 PE 分位排序，参考信息）
+  3. 新钱投放参考（固定输出：假如有新钱，按欠配度排序买这些，仅建议）
+  4. 持仓对照与调仓建议（核心口径，旧钱只做阈值再平衡）
+  5. 卫星仓 — 行业动量轮动（关注池 + 突破候选 + 调仓建议）
+  6. 动量观察（卫星仓背景排名，仅观察不交易）
+  7. 自动调仓执行结果（仅 --execute：卫星卖 → 核心卖 → 核心买 → 卫星买）
 
 卖出警示（极端条件触发：全市场 PE>90% + 行业 PE>95% + 拥挤）。
 """
@@ -40,6 +41,27 @@ from src.etf.amazing_factors import (
 from src.mx.client import is_mx_untradable
 
 logger = logging.getLogger(__name__)
+
+
+# ── 风格状态引用（元层观察，fail-soft，只展示不决策）──
+
+def _style_state_line() -> str:
+    """读取 data/style_state.json（style_report 周六产出），返回报告头部一行。"""
+    import json as _json
+    from pathlib import Path
+    try:
+        path = Path(__file__).parent / "data" / "style_state.json"
+        d = _json.loads(path.read_text(encoding="utf-8"))
+        label = {
+            "strong": "🟢 主线强势期", "fading": "🔴 退潮期",
+            "vacuum": "⚪ 风格真空期", "forming": "🟡 形成中",
+        }.get(d.get("state"), d.get("state", "未知"))
+        streak = d.get("state_streak", 1)
+        streak_txt = f"（持续 {streak} 周）" if streak > 1 else ""
+        stale = "" if (datetime.now() - datetime.strptime(d.get("data_date", ""), "%Y-%m-%d")).days <= 10 else " ⚠️ 数据陈旧"
+        return f" | **风格状态**: {label}{streak_txt}{stale}（截至 {d.get('data_date')}，判定规则见 strategy/style_state.md）"
+    except Exception:
+        return ""
 
 
 # ── 市场概览 ──
@@ -138,13 +160,15 @@ def _sell_warning() -> str:
 def _compute_allocation():
     """计算目标配比 + 调仓指令（供对照展示与自动执行复用）
 
+    动态择时已删除：目标 = 中性基准；regime 仅选再平衡阈值松紧。
+    PE 分位只用于新钱投放速度旋钮。
+
     Returns:
         dict 或 None（MX 不可用/无数据时）
     """
     if not os.getenv("MX_APIKEY"):
         return None
 
-    from src.etf.allocation_gate import check_allocation_gate
     from src.etf.rebalancer import ETFRebalancer
     from src.mx.client import MXMoniClient
 
@@ -155,35 +179,36 @@ def _compute_allocation():
 
     positions = client.get_positions()
 
-    # 估值门控 → 权益偏移 → 目标配比
-    try:
-        offset, pe_pct, current_pe, _gate_summary = check_allocation_gate()
-    except Exception:
-        logger.warning("估值门控计算失败，按中性配置对照", exc_info=True)
-        offset, pe_pct, current_pe = 0.0, None, None
+    # 全市场估值（新钱速度旋钮 + 报告参考，不进核心仓决策）
+    market_pe = get_market_pe()
+    pe_pct = market_pe.get("pe_pct") if market_pe else None
+    current_pe = market_pe.get("pe") if market_pe else None
 
     total_assets = balance["total_assets"]
     # 入口统一构造数据 manager，传给需要行情数据的下游模块（避免各自重复构造）
     from data_provider import get_fetcher
     fm = get_fetcher()
     rebalancer = ETFRebalancer(client, fetcher=fm)
-    target = rebalancer.calculate_target(equity_offset=offset)
-    core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)
-    core_assets = max(total_assets - rotation_mv, 0.0)
-    orders, total_deviation = rebalancer.compare(
-        target, positions, total_assets, gate_state="", hard_intercept=False,
-    )
-    _should, reason = rebalancer.should_rebalance(orders, total_deviation, gate_state="")
+    target = rebalancer.calculate_target()
 
-    # 卫星仓 — 行业动量轮动（只出指令，执行统一走 _execute_batch）
-    satellite = None
+    # 市场门控：regime 只选再平衡阈值松紧 + 卫星仓许可（不再驱动核心仓位）
     regime, hard_intercept = "chaos", False
     try:
-        from src.analysis.market_gate import check_market_gate, fetch_gate_inputs
+        from src.market_state.market_gate import check_market_gate, fetch_gate_inputs
 
         _can, _cond, _sum, regime, hard_intercept = check_market_gate(fetch_gate_inputs(fm))
     except Exception:
         logger.warning("市场门控获取失败，卫星仓禁买", exc_info=True)
+
+    core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)
+    orders, total_deviation = rebalancer.compare(
+        target, positions, total_assets,
+        gate_state=regime, hard_intercept=hard_intercept,
+    )
+    _should, reason = rebalancer.should_rebalance(orders, total_deviation, gate_state=regime)
+
+    # 卫星仓 — 行业动量轮动（只出指令，执行统一走 _execute_batch）
+    satellite = None
     try:
         from src.etf import industry_momentum as sat_mod
 
@@ -196,11 +221,9 @@ def _compute_allocation():
         "client": client,
         "balance": balance,
         "positions": positions,
-        "offset": offset,
         "pe_pct": pe_pct,
         "current_pe": current_pe,
         "total_assets": total_assets,
-        "core_assets": core_assets,
         "core_positions": core_positions,
         "rotation_mv": rotation_mv,
         "rotation_positions": rotation_positions,
@@ -217,7 +240,7 @@ def _compute_allocation():
 
 def _holding_overview(alloc=None) -> str:
     """持仓 vs 目标对照 + 调仓建议（只出建议，不自动执行）"""
-    lines = ["## 三、持仓对照与调仓建议", ""]
+    lines = ["## 四、持仓对照与调仓建议", ""]
 
     if alloc is None:
         alloc = _compute_allocation()
@@ -228,13 +251,9 @@ def _holding_overview(alloc=None) -> str:
             lines.append("- 妙想账户暂无数据，跳过持仓对照")
         return "\n".join(lines)
 
-    client = alloc["client"]
-    balance = alloc["balance"]
     positions = alloc["positions"]
-    offset = alloc["offset"]
     pe_pct = alloc["pe_pct"]
     total_assets = alloc["total_assets"]
-    core_assets = alloc["core_assets"]
     rotation_mv = alloc["rotation_mv"]
     rotation_positions = alloc["rotation_positions"]
     rebalancer = alloc["rebalancer"]
@@ -247,23 +266,23 @@ def _holding_overview(alloc=None) -> str:
                  "低估" if pe_pct < 40 else
                  "合理" if pe_pct < 60 else
                  "偏贵" if pe_pct < 80 else "高估")
-        gate_line = f"**权益偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}% | PE 分位 {pe_pct:.0f}%（{level}）"
+        gate_line = f"**PE 分位**: {pe_pct:.0f}%（{level}，仅作新钱投放速度与参考）"
     else:
-        gate_line = f"**权益偏移**: {'+' if offset >= 0 else ''}{offset*100:.0f}%（中性对照）"
+        gate_line = "**PE 分位**: 数据不可用"
 
     assets_line = f"**总资产**: {total_assets:,.0f} 元"
     if rotation_mv > 0:
-        assets_line += f" | **核心口径**: {core_assets:,.0f} 元 | **卫星持仓**: {rotation_mv:,.0f} 元"
+        assets_line += f" | **卫星/其他账户持仓**: {rotation_mv:,.0f} 元（由现金桶吸收）"
     lines.append(f"{assets_line} | {gate_line}")
     lines.append(f"**再平衡结论**: {reason}")
     lines.append("")
 
-    # 当前持仓占比（核心口径：卫星持仓独立预算，不参与核心偏离计算）
+    # 当前持仓占比（资金占比即总占比；卫星等基准外持仓不产生偏离，由现金桶吸收）
     current_map: dict = {}
-    for p in alloc["core_positions"]:
+    for p in positions:
         mv = float(p.get("market_value", 0) or 0)
-        if core_assets > 0:
-            current_map[p.get("code", "")] = mv / core_assets * 100
+        if total_assets > 0:
+            current_map[p.get("code", "")] = mv / total_assets * 100
 
     # 现金实际占比 = 剩余资金（妙想持仓不含现金项）
     held_sum = sum(v for k, v in current_map.items() if k != "CASH")
@@ -284,10 +303,10 @@ def _holding_overview(alloc=None) -> str:
             action = f"{'🟢买' if order.action == 'buy' else '🔴卖'} {order.quantity}股"
         lines.append(f"| {asset.name} | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} |")
 
-    # 卫星持仓与基准外持仓提示
+    # 卫星持仓与基准外持仓提示（由"现金（以及其他账户）"桶吸收，不产生核心偏离）
     if rotation_positions:
         lines.append("")
-        lines.append("> 卫星持仓（独立预算，未纳入核心对照）："
+        lines.append("> 卫星持仓（现金桶吸收，不参与核心再平衡）："
                      + "、".join(f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions))
     baseline_codes = {a.code for a in rebalancer.baseline}
     extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
@@ -311,6 +330,81 @@ def _holding_overview(alloc=None) -> str:
     return "\n".join(lines)
 
 
+def _deploy_cash_section(alloc: dict) -> str:
+    """新钱投放参考（每周固定输出）：只回答节奏问题——什么可以加速补、什么不急着补。
+
+    缺口补入不在本节：新钱入金后各资产自然欠配，按基准目标权重自行计算缺口买入即可
+    （目标权重见第二节表）；模拟仓口径的缺口由旧钱再平衡（第四节）处理。
+    """
+    from data_provider import get_etf_daily
+
+    lines = ["## 三、新钱投放参考（节奏判断，仅建议）", ""]
+    lines.append("入金后按基准目标权重补入即可（缺口 = 目标权重 x 入金后总资产 - 实际市值）。")
+    lines.append("本节只回答：哪些不急着补、哪些可以加速。")
+    lines.append("")
+
+    rows = []
+    for a in CORE_BASELINE:
+        if a.asset_type != AssetType.EQUITY:
+            continue
+        try:
+            df = get_etf_daily(a.code)
+        except Exception:
+            df = None
+        if df is None or len(df) < 25:
+            continue
+        close = df["close"]
+        ma20 = close.rolling(20).mean().iloc[-1]
+        cur = float(close.iloc[-1])
+        ret20 = (cur / float(close.iloc[-21]) - 1) * 100 if len(close) >= 21 else 0.0
+        above_ma20 = cur >= float(ma20)
+
+        # 估值分位（ AmazingData，缺失不阻断）
+        pe_pct = None
+        try:
+            info = _etf_pe_info_safe(a.code)
+            pe_pct = info
+        except Exception:
+            pass
+
+        # 节奏判定：趋势（右侧纪律）x 估值（便宜加速）
+        if above_ma20:
+            rhythm = ("🟢 可正常补" if (pe_pct is None or pe_pct >= 30)
+                      else "🟢🟢 可加速（低估 + 企稳）")
+            basis = f"站上MA20，20日{ret20:+.1f}%"
+        else:
+            rhythm = "⏳ 不急：趋势向下，分批或等站回 MA20"
+            basis = f"MA20下方，20日{ret20:+.1f}%"
+        if pe_pct is not None and pe_pct < 20 and not above_ma20:
+            rhythm = "🟡 极度低估：可分批加速，不必等企稳"
+        pe_txt = f"{pe_pct:.0f}%" if pe_pct is not None else "—"
+        manual_mark = " ⚠️ 需手动" if is_mx_untradable(a.code) else ""
+        rows.append((rhythm, f"| {a.name}({a.code}){manual_mark} | {pe_txt} | {basis} | {rhythm} |"))
+
+    # 加速在前、不急在后
+    rows.sort(key=lambda x: ("🟢🟢" not in x[0], "⏳" in x[0], "🟡" in x[0]))
+    lines.append("| 标的 | 行业PE分位 | 趋势 | 补入节奏 |")
+    lines.append("|---|---|---|---|")
+    lines.extend(r for _, r in rows)
+    lines.append("")
+    lines.append("> 缺口金额自己算：入金后缺口 = 目标权重 x 总资产 - 实际市值；模拟仓的缺口见第四节再平衡对照。")
+    lines.append("> 到账后人工在妙想 App 操作，不自动执行。")
+    lines.append("")
+    return chr(10).join(lines)
+
+
+def _etf_pe_info_safe(code: str):
+    """单只 ETF 的行业 PE 分位（缺失返回 None）。"""
+    try:
+        from src.etf.amazing_factors import _etf_pe_info
+        info = _etf_pe_info(code)
+        if info:
+            return info.get("pe_pct")
+    except Exception:
+        pass
+    return None
+
+
 # ── 卫星仓与动量观察 ──
 
 def _satellite_overview(satellite: dict) -> str:
@@ -318,7 +412,7 @@ def _satellite_overview(satellite: dict) -> str:
     if not satellite:
         return ""
 
-    lines = ["## 四、卫星仓 — 行业动量轮动", ""]
+    lines = ["## 五、卫星仓 — 行业动量轮动", ""]
     lines.append(f"预算 10% | 最多 2 只 | 当前卫星持仓市值 {satellite['satellite_mv']:,.0f} 元")
     if satellite["locked"]:
         lines.append("🔒 市场门控硬拦截：卫星仓禁新开仓（已持仓不动，降杠杆门控）")
@@ -397,7 +491,7 @@ def _momentum_observe(satellite: dict) -> str:
     ranked = satellite["ranked"][:6]
     if not ranked:
         return ""
-    lines = ["## 五、动量观察（卫星仓背景，仅排名不交易）", ""]
+    lines = ["## 六、动量观察（卫星仓背景，仅排名不交易）", ""]
     for i, r in enumerate(ranked, 1):
         pe = f"PE分位{r['pe_pct']:.0f}%" if r.get("pe_pct") is not None else "PE—"
         lines.append(
@@ -423,11 +517,12 @@ def _execute_batch(alloc: dict) -> str:
     sat_sells = list(satellite["sells"]) if satellite else []
     sat_buys = list(satellite["buy_orders"]) if satellite else []
     core_sells = [o for o in core_orders if o.action == "sell"]
+    # 新钱投放只出建议（模拟仓无法感知实际入金，不进自动执行批次，人工照建议操作）
     core_buys = [o for o in core_orders if o.action == "buy"]
     sells = sat_sells + core_sells
     buys = core_buys + sat_buys
 
-    lines = ["## 六、自动调仓执行结果", ""]
+    lines = ["## 七、自动调仓执行结果", ""]
 
     if not sells and not buys:
         lines.append("无调仓指令，本次不执行。")
@@ -522,15 +617,17 @@ def _generate_report(execute: bool = False) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     alloc = _compute_allocation()
+    deploy_section = _deploy_cash_section(alloc)
     holding_section = _holding_overview(alloc)
 
     sections = [
         f"# ETF 周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
         "",
-        f"**生成时间**: {now}",
+        f"**生成时间**: {now}" + _style_state_line(),
         "",
         _market_overview(),
         _buy_priority(),
+        deploy_section,
         holding_section,
         _satellite_overview(alloc.get("satellite")),
         _momentum_observe(alloc.get("satellite")),

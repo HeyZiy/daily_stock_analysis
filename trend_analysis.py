@@ -36,20 +36,20 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from data_provider import DataFetcherManager, canonical_stock_code
-from src.analysis.market_gate import check_market_gate, fetch_gate_inputs
-from src.analysis.numba_indicators import add_standard_indicators
+from src.indicators import add_standard_indicators
 from src.config import setup_env
 from src.notify.service import NotificationService
 from src.mx.service import MXService
 from src.mx.client import MXMoniClient
 from src.mx.position_utils import filter_stock_positions, get_last_buy_dates_safe
-from src.analysis.analyzer import StockTrendAnalyzer
-from src.analysis.strategy.removal_rules import check_removal_rules
-from src.analysis.strategy.sell_rules import (
+from src.market_state.market_gate import check_market_gate, fetch_gate_inputs
+from src.trend.analyzer import StockTrendAnalyzer
+from src.trend.removal_rules import check_removal_rules
+from src.trend.sell_rules import (
     detect_sell_signals, fetch_sector_pct_map, match_sector_pct,
 )
-from src.analysis.strategy.signal_detector import TechnicalSignal, detect_pullback_signals
-from src.analysis.report import generate_technical_report
+from src.trend.signal_detector import TechnicalSignal, detect_pullback_signals
+from src.trend.report import generate_technical_report
 setup_env()
 
 logger = logging.getLogger(__name__)

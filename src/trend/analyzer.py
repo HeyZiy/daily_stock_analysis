@@ -263,7 +263,7 @@ class StockTrendAnalyzer:
     
     def _calculate_mas(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算均线（numba 算子加速，AmazingData 不可用时回退 pandas）"""
-        from src.analysis.numba_indicators import ma
+        from src.indicators import ma
 
         df = df.copy()
         # 与原实现 rolling(window=n) 一致：不足窗口返回 NaN
@@ -287,7 +287,7 @@ class StockTrendAnalyzer:
         - DEA = EMA(DIF, 9)
         - MACD = (DIF - DEA) * 2
         """
-        from src.analysis.numba_indicators import macd
+        from src.indicators import macd
 
         df = df.copy()
         macd_df = macd(df['close'], fast=self.MACD_FAST, slow=self.MACD_SLOW, signal=self.MACD_SIGNAL)
@@ -304,7 +304,7 @@ class StockTrendAnalyzer:
         - RS = 平均上涨幅度 / 平均下跌幅度
         - RSI = 100 - (100 / (1 + RS))
         """
-        from src.analysis.numba_indicators import rsi
+        from src.indicators import rsi
 
         df = df.copy()
 

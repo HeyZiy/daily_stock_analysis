@@ -36,8 +36,10 @@ class AssetAllocation:
 
 
 # ── 中性基准配置 ──
-# 核心仓位：长期持有，gate 驱动战术偏移 + 再平衡
-# 卫星仓（行业动量轮动，标的集见 get_rotation_universe_codes）独立于核心仓，动态扫描 ETF_INDUSTRY_MAP，不属于中性基准
+# 核心仓位：长期持有，来源=有知有行基准（适配规则见 strategy/etf_allocation.md 第二节），
+# 半年人工对齐一次。权重为总资产占比；"现金"桶吸收卫星仓与其他账户的资金。
+# 卫星仓（行业动量轮动，标的集见 get_rotation_universe_codes）独立于核心基准，
+# 动态扫描 ETF_INDUSTRY_MAP，其持仓被"现金（以及其他账户）"桶吸收，不产生核心偏离。
 
 CORE_BASELINE: List[AssetAllocation] = [
     # ── A股宽基 ──
@@ -60,18 +62,6 @@ CORE_BASELINE: List[AssetAllocation] = [
 
 # 再平衡模块使用核心仓位
 NEUTRAL_BASELINE = CORE_BASELINE
-
-# Gate 状态 → 权益类战术偏移（正数=加权益减现金，负数=减权益加现金）
-GATE_OFFSET: dict = {
-    "trending_up":    0.15,
-    "weak_up":        0.10,
-    "sideways":       0.00,
-    "trending_down": -0.20,
-    "chaos":         -0.30,
-}
-
-# hard_intercept 状态下额外偏移（叠加到 gate 偏移上）
-HARD_INTERCEPT_EXTRA = -0.10
 
 # 减仓优先级：按 volatility_rank 从高到低（创业板先减，国债/现金后减）
 # gold 和 bond 在 trending_down/chaos/hard_intercept 时不减
@@ -103,22 +93,12 @@ def get_rotation_universe_codes() -> set:
     return set(ETF_INDUSTRY_MAP) - baseline_codes
 
 
-def get_equity_total_weight() -> float:
-    return sum(a.neutral_weight for a in NEUTRAL_BASELINE if a.asset_type == AssetType.EQUITY)
-
-
-def get_gate_offset(gate_state: str, hard_intercept: bool) -> float:
-    """返回权益类偏移量（正数=加权益，负数=减权益）"""
-    offset = GATE_OFFSET.get(gate_state, 0.0)
-    if hard_intercept:
-        offset += HARD_INTERCEPT_EXTRA
-    return max(-0.40, min(0.15, offset))  # 限制在 [-40%, +15%] 范围内
-
 
 def get_rebalance_threshold(gate_state: str) -> float:
-    """根据 gate 状态返回再平衡阈值"""
+    """根据 gate 状态返回再平衡阈值（gate 的残值：只选阈值松紧，不产生仓位动作）"""
     if gate_state in ("trending_up", "weak_up"):
         return REBALANCE_LOOSE_THRESHOLD
     if gate_state in ("trending_down", "chaos"):
         return REBALANCE_TIGHT_THRESHOLD
     return REBALANCE_SINGLE_THRESHOLD
+
