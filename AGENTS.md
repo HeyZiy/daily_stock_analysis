@@ -7,6 +7,7 @@ style_report.py     → 风格状态周报：周度判定 主线强势期/退潮
                        落盘 data/style_state.json；--backtest 历史回放验证标签
 
 src/trend/                       ← 趋势策略全链路：分析器(analyzer)、信号检测(signal_detector)、
+                                   负面清单硬否决(veto_rules，9条规则，位于剔除规则与信号检测之间)、
                                    剔除规则(removal_rules)、卖出信号(sell_rules，读妙想持仓输出
                                    减仓/清仓建议)、日报生成(report)
 src/market_state/                ← 市场环境判断（跨策略共享）：趋势门控(market_gate，硬拦截 +

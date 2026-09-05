@@ -1,40 +1,131 @@
 # -*- coding: utf-8 -*-
 """
-趋势波段策略 — 分歧回踩信号检测
+趋势波段策略 — 缩量回踩信号检测
 
 核心买点逻辑：
-- 第一次分歧回踩 MA5（缩量 + 不破5日线 + 换手率>5%）
+- 缩量回踩 MA5（不破5日线 + 换手率>5%）
 - 回踩 MA10（次优，需确认）
+- 缩量贴 MA5（信号3，观察信号：同 setup 但当日收涨未回踩，不是买点，等回踩再接）
 """
 
 import logging
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, fields
+from typing import List, Optional
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# 板块取不到时的显式占位符。
+# 禁止用空串或 None：空串渲染出空单元格（视觉上像列错位），None 会渲染成字面量 "None"。
+UNKNOWN_SECTOR = "未知板块"
+
+# 信号类型白名单。新增买点形态时必须在此登记，并同步补 report._build_action_guide 的操作指引。
+KNOWN_SIGNAL_TYPES = ("pullback_ma5", "pullback_ma10", "near_ma5")
+
+
+class SignalFieldError(ValueError):
+    """信号对象字段缺失或非法时抛出。
+
+    设计取向：宁可让任务失败，也不让 0 / "" / None 静默流进渲染层——
+    那只会产出一份"看起来正常、其实评分全为 0 或列全错位"的报告。
+    """
+
 
 @dataclass
 class TechnicalSignal:
-    """技术信号数据类"""
+    """技术信号数据类。
+
+    字段分两层：
+    - **必填（无默认值）**：买点判定直接产生的事实，漏传即 TypeError，构造阶段就炸。
+    - **可选（有默认值）**：板块、环境调节结果等外部补充信息。
+
+    关于 effective_score：
+        它必须是 None（尚未调节）或 apply_regime() 算出的值，**不允许默认 0**。
+        渲染层一律经 effective 属性读取，未调节时直接抛异常——
+        避免"漏跑调节步骤 → 静默变 0 → 所有信号被判进'暂不关注'"。
+
+    Attributes:
+        sector: 所属板块名称，取不到时为 UNKNOWN_SECTOR
+        effective_score: 经市场环境调节后的有效评分（None = 未调节）
+        regime_note: 环境调节说明（如"趋势下行×0.5"）
+    """
+
+    # ── 必填（漏传即 TypeError）──
     code: str
     name: str
-    signal_type: str  # 'pullback_ma5', 'pullback_ma10' 等
+    signal_type: str  # 'pullback_ma5' / 'pullback_ma10'，见 KNOWN_SIGNAL_TYPES
     score: int  # 技术评分 0-100
     current_price: float
     ma5: float
     ma10: float
     ma20: float
-    bias_ma5: float  # 乖离率
+    bias_ma5: float  # 乖离率(%)
     volume_ratio: float  # 量比
-    turnover_rate: float  # 换手率
-    pct_change: float = 0.0  # 当日涨跌幅
-    effective_score: int = 0  # 经市场环境调节后的有效评分
-    regime_note: str = ""  # 环境调节说明（如"趋势下行×0.75"）
-    sector: str = ""  # 所属板块名称
-    description: str = ""  # 信号描述
+    turnover_rate: float  # 换手率(%)
+    pct_change: float  # 当日涨跌幅(%)
+    description: str  # 信号描述
+
+    # ── 可选（有默认值）──
+    sector: str = UNKNOWN_SECTOR  # 所属板块名称
+    effective_score: Optional[int] = None  # 经市场环境调节后的有效评分
+    regime_note: str = ""  # 环境调节说明
+
+    def __post_init__(self) -> None:
+        """构造即校验：禁止 None、校验取值域，把错误挡在渲染层之前。"""
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if value is None and f.name != "effective_score":
+                raise SignalFieldError(
+                    f"{self.code or '?'}: 字段 {f.name} 为 None（禁止 None 流入渲染层）"
+                )
+
+        if not self.code or not self.name:
+            raise SignalFieldError(f"信号缺少 code/name: code={self.code!r} name={self.name!r}")
+        if self.signal_type not in KNOWN_SIGNAL_TYPES:
+            raise SignalFieldError(
+                f"{self.name}({self.code}): 未知 signal_type={self.signal_type!r}，"
+                f"须为 {KNOWN_SIGNAL_TYPES}（新增买点形态须登记并补操作指引）"
+            )
+        if not 0 <= self.score <= 100:
+            raise SignalFieldError(f"{self.name}({self.code}): score={self.score} 超出 0-100")
+        for fname in ("current_price", "ma5", "ma10", "ma20"):
+            value = getattr(self, fname)
+            if value <= 0:
+                raise SignalFieldError(f"{self.name}({self.code}): {fname}={value} 非正数")
+
+    def apply_regime(self, modifier: float, note: str) -> None:
+        """按市场环境系数写入有效评分（渲染前的最后一步，必须且只需调用一次）。"""
+        self.effective_score = max(0, int(self.score * modifier))
+        self.regime_note = note
+
+    @property
+    def effective(self) -> int:
+        """渲染层读取有效评分的唯一入口：未调节即抛异常。"""
+        if self.effective_score is None:
+            raise SignalFieldError(
+                f"{self.name}({self.code}): effective_score 未计算（未调用 apply_regime），拒绝渲染"
+            )
+        return self.effective_score
+
+    @property
+    def sector_known(self) -> bool:
+        """板块是否取到（False 时依赖板块的判定不可用）。"""
+        return self.sector != UNKNOWN_SECTOR
+
+
+def _position_penalty(pos: float) -> float:
+    """位置扣分：距近 60 日低点涨幅越高扣分越重（与 veto V7 同一口径）。
+
+    映射（线性 0.4 分/百分点）：≤25% 扣 0，30% 扣 2，40% 扣 6，
+    50% 扣 10，60% 扣 14，70% 扣 18，≥75% 扣满 20 分。
+    ≥80% 由 veto V7 在前置层否决，不会到达此处。
+    """
+    if pos <= 25:
+        return 0.0
+    if pos >= 75:
+        return 20.0
+    return (pos - 25) * 0.4
 
 
 def _compute_signal_score(signal_type: str, metrics: dict) -> int:
@@ -42,10 +133,11 @@ def _compute_signal_score(signal_type: str, metrics: dict) -> int:
     根据多维指标动态计算信号评分，替代硬编码的 90/65。
 
     Args:
-        signal_type: 'pullback_ma5' 或 'pullback_ma10'
+        signal_type: 'pullback_ma5' / 'near_ma5' / 'pullback_ma10'
         metrics: 包含以下键的字典：
             bias_ma5, volume_ratio, pct_change, turnover_rate,
-            close_position, lower_shadow, recently_above_ma5_count
+            close_position, lower_shadow, recently_above_ma5_count,
+            position_gain（距近 60 日低点涨幅%，可选）
 
     Returns:
         0-100 的评分
@@ -57,8 +149,12 @@ def _compute_signal_score(signal_type: str, metrics: dict) -> int:
     cp = metrics.get('close_position', 0.5)
     ls = metrics.get('lower_shadow', 0.1)
     above_count = metrics.get('recently_above_ma5_count', 3)
+    pos = metrics.get('position_gain', 0.0)
 
-    if signal_type == 'pullback_ma5':
+    if signal_type in ('pullback_ma5', 'near_ma5'):
+        # near_ma5（缩量贴MA5）与 pullback_ma5 是同一组 setup，共用同一套权重；
+        # 但封顶 79 分：≥80 会进报告「优先关注（适合尾盘介入）」档，
+        # 与 near_ma5"不是买点、等回踩"的剧本矛盾。
         # --- bias_ma5 (0~25分): 越贴近MA5越好 ---
         if 0.0 <= bias <= 2.0:
             bias_score = 25 - abs(bias - 0.5) * 10  # 峰值为+0.5%
@@ -105,7 +201,9 @@ def _compute_signal_score(signal_type: str, metrics: dict) -> int:
         above_score = min(10, above_count * 2)
 
         score = bias_score + vol_score + pct_score + tr_score + id_score + above_score
-        return min(95, max(50, score))
+        score -= _position_penalty(pos)
+        score_cap = 79 if signal_type == 'near_ma5' else 95
+        return min(score_cap, max(50, score))
 
     elif signal_type == 'pullback_ma10':
         # MA10回踩评分：更低基础，保守权重
@@ -141,6 +239,7 @@ def _compute_signal_score(signal_type: str, metrics: dict) -> int:
         touch_score = 15 if touches else 0
 
         score = bias_score + vol_score + pct_score + tr_score + id_score + touch_score
+        score -= _position_penalty(pos)
         return min(85, max(30, score))
 
     return 50
@@ -253,25 +352,14 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     if bias_ma20 > 15.0:
         is_euphoric = True
 
-    # 4.4 近20日累计涨幅过大：涨幅>80% → 信号失效（追高风险极高）
-    is_overextended = False
-    recent_20d_gain = 0.0
-    if len(df) >= 21:
-        recent_20d_gain = (df.iloc[-1]['close'] - df.iloc[-21]['close']) / df.iloc[-21]['close'] * 100
-        if recent_20d_gain > 80.0:
-            is_overextended = True
+    # 4.4 位置维度：距近60日最低收盘涨幅（与 veto V7 统一口径）
+    #     涨幅≥80% → 信号失效（追高风险极高），<80% 时作为评分扣分维度（见 _position_penalty）
+    low_60 = float(df['close'].tail(60).min())
+    position_gain = (current_price - low_60) / low_60 * 100 if low_60 > 0 else 0.0
+    is_overextended = position_gain >= 80.0
 
-    # 4.5 妖股拦截：近5个交易日涨停 ≥ 3 次 → 行为异常，信号不可靠
-    is_monster = False
-    monster_limit_up = 0
-    if len(df) >= 6:
-        for i in range(-5, 0):
-            _prev_close = df.iloc[i - 1]['close']
-            _cur_close = df.iloc[i]['close']
-            if _prev_close > 0 and (_cur_close - _prev_close) / _prev_close >= 0.095:
-                monster_limit_up += 1
-        if monster_limit_up >= 3:
-            is_monster = True
+    # 说明：原「妖股拦截」（近5日涨停≥3次）已迁入 veto_rules 的 V6（近20日涨跌停≥3天），
+    # 口径更宽且覆盖原条件（5日涨停3次必然满足20日涨跌停3天），此处不再重复判定。
 
     # 5. 量能检查：当日成交量 < 5日均量 * 1.1（不允许爆量，而非必须地量）
     current_volume = latest['volume']
@@ -279,13 +367,20 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     no_volume_blowoff = volume_ma5 > 0 and current_volume < volume_ma5 * 1.1
 
     # 6. 第一次回踩MA5检查：过去5天至少3天收盘在MA5之上
-    recently_above_ma5 = (
-        sum(1 for i in range(-6, -1) if df.iloc[i]['close'] > df.iloc[i]['ma5']) >= 3
-        if len(df) >= 6 else False
+    above_ma5_count = (
+        sum(1 for i in range(-6, -1) if df.iloc[i]['close'] > df.iloc[i]['ma5'])
+        if len(df) >= 6 else 0
     )
+    recently_above_ma5 = above_ma5_count >= 3
 
     # 7. MA10 回踩确认：盘中最低价接近MA10且收盘守住
     touches_ma10 = latest['low'] <= ma10 * 1.01 and current_price >= ma10
+
+    # 8. 回踩形态判定：当日收跌，或盘中最低价触及 MA5 附近。
+    #    容差 1.005 与 holds_ma5 的 0.995 对称（一侧允许微破、一侧允许贴线）。
+    #    信号1（缩量回踩MA5）与信号3（缩量贴MA5）共用同一组 setup 闸门，仅以此形态分岔：
+    #    真回踩 → 买点信号；收涨未回踩 → 观察信号（不是买点，等回踩再接）。
+    is_pullback_shape = pct_change < 0 or latest['low'] <= ma5 * 1.005
 
     # 只有均线多头排列的股票才有分析意义
     if not is_bullish_alignment:
@@ -306,10 +401,8 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         _cond_fails.append(f"换手率不足(turnover={turnover:.2f}%)")
     if is_euphoric:
         _cond_fails.append(f"情绪过热(3d={recent_3d_gain:.1f}% 5d={recent_5d_gain:.1f}% 振幅={recent_max_amplitude:.1f}% 涨跌={pct_change:+.2f}% MA20乖离={bias_ma20:+.1f}%)")
-    if is_monster:
-        _cond_fails.append(f"妖股(近5日涨停{monster_limit_up}次)")
     if is_overextended:
-        _cond_fails.append(f"近期涨幅过大(近20日{recent_20d_gain:+.1f}%>80%)")
+        _cond_fails.append(f"距60日低点涨幅过大({position_gain:+.1f}%≥80%)")
     if not recently_above_ma5:
         _cond_fails.append("5天内<3天站在MA5之上")
     if not is_moderate_change:
@@ -318,20 +411,29 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
     if _cond_fails:
         logger.debug(f"  {name}({code}) 信号1不满足 | {'; '.join(_cond_fails)}")
     else:
-        logger.info(f"  {name}({code}) ✅ 信号1全部条件满足！")
+        logger.info(f"  {name}({code}) ✅ 信号1/3 setup 条件满足（按当日形态分岔为回踩/贴线）")
 
-    # 信号1: 缩量回踩 MA5（主升中的第一次分歧回踩）— 最佳买点
-    # 条件：多头排列 + 守住MA5 + 缩量 + 小实体/小跌 + 换手达标 + 非加速 + 涨跌幅温和
-    if (holds_ma5 and no_volume_blowoff and -1.5 < bias_ma5 < 3.5
-            and has_intraday_support and meets_liquidity
-            and not is_euphoric and not is_monster and not is_overextended
-            and recently_above_ma5 and is_moderate_change):
+    # 信号1: 缩量回踩 MA5 — 最佳买点（当日真回踩：收跌或盘中触及 MA5）
+    # 信号3: 缩量贴 MA5 — 同一 setup 的非回踩形态（收涨未回踩），是观察信号而非买点
+    # 共用条件：多头排列 + 守住MA5 + 缩量 + 小实体/小跌 + 换手达标 + 非加速 + 涨跌幅温和
+    meets_ma5_setup = (holds_ma5 and no_volume_blowoff and -1.5 < bias_ma5 < 3.5
+                       and has_intraday_support and meets_liquidity
+                       and not is_euphoric and not is_overextended
+                       and recently_above_ma5 and is_moderate_change)
 
-        # --- 龙头换手标注（借鉴 dragon_head 策略）---
-        signal_desc = f"第一次分歧回踩MA5，缩量（量比{volume_ratio:.2f}）不破5日线，涨跌{pct_change:+.2f}%"
+    if meets_ma5_setup:
+        signal_type = 'pullback_ma5' if is_pullback_shape else 'near_ma5'
+        if is_pullback_shape:
+            signal_desc = f"缩量回踩MA5（量比{volume_ratio:.2f}）不破5日线，涨跌{pct_change:+.2f}%"
+        else:
+            signal_desc = f"缩量贴MA5（量比{volume_ratio:.2f}）收涨未回踩，涨跌{pct_change:+.2f}%"
         if turnover > 8.0 and 2.0 <= pct_change <= 5.0:
             signal_desc += " ⭐换手活跃具龙头特征"
-        elif turnover > 5.0:
+        elif turnover > 10.0:
+            signal_desc += f" 换手{turnover:.1f}%分歧剧烈"
+        elif turnover >= 7.0:
+            signal_desc += f" 换手{turnover:.1f}%偏热"
+        elif turnover >= 4.0:
             signal_desc += f" 换手{turnover:.1f}%正常"
 
         # --- 一阳三阴形态标注（借鉴 one_yang_three_yin 策略）---
@@ -346,7 +448,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
                         and pullback_volumes.mean() < anchor['volume']):
                     signal_desc += " 📐一阳三阴形态"
 
-        # 计算动态评分替代硬编码90分
+        # 计算动态评分（near_ma5 与 pullback_ma5 同权重，评分函数内对 near_ma5 封顶 79）
         s1_metrics = {
             'bias_ma5': bias_ma5,
             'volume_ratio': volume_ratio,
@@ -354,17 +456,16 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
             'turnover_rate': turnover,
             'close_position': close_position,
             'lower_shadow': lower_shadow_ratio,
-            'recently_above_ma5_count': sum(
-                1 for i in range(-6, -1) if df.iloc[i]['close'] > df.iloc[i]['ma5']
-            ) if len(df) >= 6 else 3,
+            'recently_above_ma5_count': above_ma5_count if len(df) >= 6 else 3,
+            'position_gain': position_gain,
         }
-        dynamic_score = _compute_signal_score('pullback_ma5', s1_metrics)
+        dynamic_score = _compute_signal_score(signal_type, s1_metrics)
 
         signals.append(TechnicalSignal(
             code=code,
             name=name,
-            signal_type='pullback_ma5',
-            score=dynamic_score,
+            signal_type=signal_type,
+            score=int(dynamic_score),
             current_price=current_price,
             ma5=ma5,
             ma10=ma10,
@@ -383,7 +484,6 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
           and has_intraday_support
           and meets_liquidity
           and not is_euphoric
-          and not is_monster
           and not is_overextended
           and not holds_ma5):  # 确实跌破了MA5
         # 计算动态评分替代硬编码65分
@@ -395,6 +495,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
             'close_position': close_position,
             'lower_shadow': lower_shadow_ratio,
             'touches_ma10': touches_ma10,
+            'position_gain': position_gain,
         }
         dynamic_score_s2 = _compute_signal_score('pullback_ma10', s2_metrics)
 
@@ -402,7 +503,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
             code=code,
             name=name,
             signal_type='pullback_ma10',
-            score=dynamic_score_s2,
+            score=int(dynamic_score_s2),
             current_price=current_price,
             ma5=ma5,
             ma10=ma10,
@@ -430,7 +531,7 @@ def detect_pullback_signals(code: str, name: str, df: pd.DataFrame) -> List[Tech
         if is_euphoric:
             _s2_fails.append(f"情绪过热(MA20乖离={bias_ma20:+.1f}%)")
         if is_overextended:
-            _s2_fails.append(f"近期涨幅过大(近20日{recent_20d_gain:+.1f}%)")
+            _s2_fails.append(f"距60日低点涨幅过大({position_gain:+.1f}%)")
         logger.debug(f"  {name}({code}) 信号2不满足 | {'; '.join(_s2_fails)}")
 
     # 注意：不放量突破信号 — 策略明确规定"不做加速追高"

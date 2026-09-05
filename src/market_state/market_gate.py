@@ -24,12 +24,79 @@
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# 状态判定的命中路径文案（与 _detect_regime 的判定顺序一一对应，供报告诊断用）
+REGIME_PATHS = {
+    "trending_down": "① 均线空头排列(MA5<MA10<MA20) + 收盘<MA10",
+    "trending_up":   "② 均线多头排列(MA5>MA10>MA20) + 收盘>MA10 + 门控≥2",
+    "sideways":      "③ 收盘紧贴MA20（偏离<1.5%）",
+    "weak_up":       "④ 收盘>MA20 + 门控≥2（非标准多头排列）",
+    "chaos":         "⑤ 以上均不满足（或数据不足）",
+}
+
+SIDEWAYS_BIAS = 0.015  # sideways 判定阈值：收盘偏离 MA20 < 1.5%
+
+
+def _n(value: Optional[float]) -> Optional[float]:
+    """float 统一 2 位小数（报告口径，避免各处精度不一）。"""
+    return None if value is None else round(float(value), 2)
+
+
+def _alignment_text(ma5: float, ma10: float, ma20: float) -> str:
+    """均线排列描述，如 'MA5>MA10>MA20（多头排列）'。"""
+    order = sorted((("MA5", ma5), ("MA10", ma10), ("MA20", ma20)),
+                   key=lambda kv: kv[1], reverse=True)
+    seq = ">".join(name for name, _ in order)
+    if seq == "MA5>MA10>MA20":
+        label = "（多头排列）"
+    elif seq == "MA20>MA10>MA5":
+        label = "（空头排列）"
+    else:
+        label = "（交织，无明确排列）"
+    return f"{seq}{label}"
+
+
+@dataclass
+class RegimeDiagnosis:
+    """市场状态判定的诊断信息（回答"为什么判成这个状态"）。
+
+    Attributes:
+        regime: 判定结果
+        ma5/ma10/ma20/close: 判定所依据的均线与收盘（均为 2 位小数）
+        bias_ma20: 收盘偏离 MA20 的百分比（正=在 MA20 上方）
+        alignment: 均线排列描述
+        path: 命中的判定路径文案
+        note: 补充说明（如数据不足、门控项数）
+    """
+    regime: str
+    ma5: Optional[float] = None
+    ma10: Optional[float] = None
+    ma20: Optional[float] = None
+    close: Optional[float] = None
+    bias_ma20: Optional[float] = None
+    alignment: str = "数据不足，无法判定"
+    path: str = ""
+    note: str = ""
+
+    @property
+    def available(self) -> bool:
+        return self.ma20 is not None and self.close is not None
+
+    def describe(self) -> str:
+        """人类可读的三行诊断（供日志与报告共用）。"""
+        if not self.available:
+            return f"状态={self.regime}｜均线数据不足，无法给出排列与偏离（{self.note}）"
+        return (
+            f"状态={self.regime}｜{self.alignment}｜"
+            f"收盘{self.close} 偏离MA20 {self.bias_ma20:+.2f}%｜命中：{self.path}"
+        )
 
 # ── 简单持久化：硬拦截中"成交额冰点连续天数"的记录文件 ──
 import os
@@ -60,12 +127,13 @@ def _save_ice_days(days: int):
         pass
 
 
-def _detect_regime(index_df, met_count: int) -> str:
-    """根据指数均线状态判断市场结构
+def diagnose_regime(index_df, met_count: int) -> RegimeDiagnosis:
+    """根据指数均线状态判断市场结构，并给出可解释的诊断信息。
 
     判定优先级：trending_down > trending_up > sideways > weak_up > chaos
 
     Returns:
+        RegimeDiagnosis：含 regime、MA5/MA10/MA20 排列、偏离 MA20 百分比、命中路径
         trending_up   — 均线多头排列 + 收盘在 MA10 上方 + 门控通过
         trending_down — 均线空头排列 + 收盘在 MA10 下方
         sideways      — 收盘紧贴 MA20（偏离 < 1.5%）
@@ -74,35 +142,54 @@ def _detect_regime(index_df, met_count: int) -> str:
     """
     try:
         if index_df is None or len(index_df) < 20:
-            return "chaos"
+            return RegimeDiagnosis("chaos", path=REGIME_PATHS["chaos"],
+                                   note="指数日线缺失或不足20条")
         ma5 = index_df['close'].rolling(5).mean().iloc[-1]
         ma10 = index_df['close'].rolling(10).mean().iloc[-1]
         ma20 = index_df['close'].rolling(20).mean().iloc[-1]
         close = index_df['close'].iloc[-1]
         if any(pd.isna(x) for x in [ma5, ma10, ma20]):
-            return "chaos"
+            return RegimeDiagnosis("chaos", path=REGIME_PATHS["chaos"],
+                                   note="MA5/MA10/MA20 存在 NaN")
+
+        ma5, ma10, ma20, close = float(ma5), float(ma10), float(ma20), float(close)
+        bias_ma20 = (close - ma20) / ma20 * 100 if ma20 > 0 else 0.0
+        base = dict(
+            ma5=_n(ma5), ma10=_n(ma10), ma20=_n(ma20), close=_n(close),
+            bias_ma20=_n(bias_ma20), alignment=_alignment_text(ma5, ma10, ma20),
+        )
 
         # ① trending_down — 均线空头，最高优先级
         if ma5 < ma10 < ma20 and close < ma10:
-            return "trending_down"
+            return RegimeDiagnosis("trending_down", path=REGIME_PATHS["trending_down"],
+                                   note=f"收盘{_n(close)} < MA10 {_n(ma10)}", **base)
 
         # ② trending_up — 均线多头 + 门控通过
         if ma5 > ma10 > ma20 and close > ma10 and met_count >= 2:
-            return "trending_up"
+            return RegimeDiagnosis("trending_up", path=REGIME_PATHS["trending_up"],
+                                   note=f"门控通过{met_count}项", **base)
 
         # ③ sideways — 紧贴 MA20 震荡
-        if abs(close - ma20) / ma20 < 0.015:
-            return "sideways"
+        if abs(close - ma20) / ma20 < SIDEWAYS_BIAS:
+            return RegimeDiagnosis("sideways", path=REGIME_PATHS["sideways"],
+                                   note=f"偏离MA20 {_n(bias_ma20):+.2f}%", **base)
 
         # ④ weak_up — 在 MA20 上方 + 门控通过，但不是标准多头排列
         if close > ma20 and met_count >= 2:
-            return "weak_up"
+            return RegimeDiagnosis("weak_up", path=REGIME_PATHS["weak_up"],
+                                   note=f"门控通过{met_count}项，但均线非标准多头", **base)
 
         # ⑤ chaos — 其余情况
-        return "chaos"
-    except Exception:
-        pass
-    return "chaos"
+        return RegimeDiagnosis("chaos", path=REGIME_PATHS["chaos"],
+                               note=f"门控通过{met_count}项，未满足以上任一结构", **base)
+    except Exception as e:
+        logger.warning(f"市场状态判定失败，降级为 chaos：{e}")
+    return RegimeDiagnosis("chaos", path=REGIME_PATHS["chaos"], note="判定异常，降级处理")
+
+
+def _detect_regime(index_df, met_count: int) -> str:
+    """同 diagnose_regime，但只返回状态字符串（内部判定用）。"""
+    return diagnose_regime(index_df, met_count).regime
 
 
 def _check_hard_intercept(
@@ -110,7 +197,6 @@ def _check_hard_intercept(
     total_amount_yi: float,
     limit_up: int,
     limit_down: int,
-    details: List[str],
 ) -> Tuple[bool, str]:
     """检查硬拦截条件
 
@@ -295,7 +381,7 @@ def check_market_gate(gate_inputs: Dict[str, Any]) -> Tuple[bool, Dict[str, bool
 
     # ── 硬拦截检查 ──
     is_hard, hard_reason = _check_hard_intercept(
-        index_df, total_amount_yi, limit_up, limit_down, details
+        index_df, total_amount_yi, limit_up, limit_down
     )
     if is_hard:
         logger.warning(hard_reason)

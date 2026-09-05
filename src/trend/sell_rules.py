@@ -25,17 +25,28 @@ sideways/chaos：自然退出，不输出主动卖出信号（仅硬拦截全清
 持仓事实来源：妙想模拟仓（用户手动同步持仓）；执行仍由用户主动，本模块只出建议。
 
 量比口径：当日成交量 ÷ 前 5 日均量（不含当日）。
+
+板块降级约定：
+- 板块取不到 → 降级为「未知板块」（UNKNOWN_SECTOR），不用空串/None；
+- 板块行情缺失 → sector_pct 为 None；
+- 两者任一成立时板块类规则（板块走弱 / 主线退潮）跳过，并由
+  HoldingRow.sector_skipped 把"判不了"这一事实带到报告层显式标注，
+  避免用户把"无卖出信号"误读成"板块没走弱"。
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from src.mx.position_utils import position_profit_pct
+from src.trend.signal_detector import UNKNOWN_SECTOR, SignalFieldError
 
 logger = logging.getLogger(__name__)
+
+# 卖出动作白名单（渲染层文案与判定分支共用）
+VALID_ACTIONS = ("reduce_half", "clear")
 
 # ── 正常版阈值 ──
 VOL_RATIO_NORMAL = 2.0        # 放量：当日量/前5日均量 ≥ 2.0
@@ -59,27 +70,89 @@ REDUCE_NOTE = "减仓后剩余仓位：止损线上移至10日线，收盘跌破
 
 @dataclass
 class SellSignal:
-    """持仓卖出信号（只出建议，不执行交易）"""
+    """持仓卖出信号（只出建议，不执行交易）。
+
+    构造即校验：code/name/action/reasons 为必填事实，缺失或非法直接抛异常，
+    不允许带着空壳对象流进渲染层。
+
+    Attributes:
+        sector: 所属板块名称，取不到时为 UNKNOWN_SECTOR
+        sector_pct: 板块当日涨跌幅（None=无法判断，板块类规则跳过）
+    """
+    # ── 必填（漏传即 TypeError）──
     code: str
     name: str
     action: str                      # 'reduce_half' | 'clear'
-    reasons: List[str] = field(default_factory=list)
-    current_price: float = 0.0
+    reasons: List[str]
+    current_price: float
+    cost_price: float
+    profit_pct: float
+    count: int                       # 当前持仓股数
+    suggest_shares: int              # 建议卖出股数（100 整数倍）
+    # ── 可选（有默认值）──
     ma5: float = 0.0
     ma10: float = 0.0
     ma20: float = 0.0
-    count: int = 0                   # 当前持仓股数
-    suggest_shares: int = 0          # 建议卖出股数（100 整数倍）
-    cost_price: float = 0.0
-    profit_pct: float = 0.0
     entry_date: str = ""             # 买入日期（历史委托推导，可能为空）
     pct_change: float = 0.0
     vol_ratio: float = 0.0
     stage_high: float = 0.0          # 阶段高点（近20日最高收盘）
     platform_low: float = 0.0        # 关键平台（近20日最低收盘）
-    sector: str = ""                 # 所属板块名称
-    sector_pct: Optional[float] = None   # 板块当日涨跌幅（None=无法判断）
+    sector: str = UNKNOWN_SECTOR     # 所属板块名称
+    sector_pct: Optional[float] = None   # 板块当日涨跌幅
     note: str = ""                   # 附加提醒
+
+    def __post_init__(self) -> None:
+        if not self.code or not self.name:
+            raise SignalFieldError(f"卖出信号缺少 code/name: {self.code!r}/{self.name!r}")
+        if self.action not in VALID_ACTIONS:
+            raise SignalFieldError(
+                f"{self.name}({self.code}): 未知卖出动作 {self.action!r}，须为 {VALID_ACTIONS}"
+            )
+        if not self.reasons:
+            # 没有触发原因的卖出信号对用户毫无意义，多半是规则漏填
+            raise SignalFieldError(f"{self.name}({self.code}): 卖出信号缺少触发原因")
+        if self.current_price <= 0:
+            raise SignalFieldError(f"{self.name}({self.code}): current_price={self.current_price} 非正数")
+        if self.count < 0 or self.suggest_shares < 0:
+            raise SignalFieldError(
+                f"{self.name}({self.code}): 股数为负（count={self.count} suggest={self.suggest_shares}）"
+            )
+
+
+@dataclass
+class HoldingRow:
+    """持仓行 —— 日报「持仓卖出信号」板块的渲染输入（一只持仓一行）。
+
+    替代原 (position, signal, sector, sector_pct) 元组：元组按下标取值，
+    加字段时容易取错位置且无校验。
+
+    Attributes:
+        position: 妙想持仓接口返回的标准化 dict
+        signal: 卖出信号，None = 无信号（继续持有）
+        sector: 所属板块名称，取不到时为 UNKNOWN_SECTOR
+        sector_pct: 板块当日涨跌幅（None=无法判断）
+        sector_skipped: 板块类规则是否已跳过（板块未知 或 板块行情缺失）。
+            用于区分「板块没走弱」与「板块走弱判不了」——
+            用户在报告里看到的"无卖出信号"，含义完全不同。
+    """
+    position: dict
+    signal: Optional[SellSignal] = None
+    sector: str = UNKNOWN_SECTOR
+    sector_pct: Optional[float] = None
+    sector_skipped: bool = False
+
+    @property
+    def code(self) -> str:
+        return str(self.position.get("code", "") or "")
+
+    @property
+    def name(self) -> str:
+        return str(self.position.get("name", "") or self.code)
+
+    @property
+    def profit_pct(self) -> float:
+        return position_profit_pct(self.position)
 
 
 def _compute_metrics(df: pd.DataFrame) -> Optional[dict]:
@@ -235,7 +308,8 @@ def _check_rules(metrics: dict, profit_pct: float, regime: str,
 
 def detect_sell_signals(code: str, name: str, df: pd.DataFrame, position: dict,
                         regime: str, hard_intercept: bool,
-                        sector: str = "", sector_pct: Optional[float] = None,
+                        sector: str = UNKNOWN_SECTOR,
+                        sector_pct: Optional[float] = None,
                         entry_date: str = "") -> Optional[SellSignal]:
     """检测单只持仓的卖出信号。
 
@@ -245,7 +319,7 @@ def detect_sell_signals(code: str, name: str, df: pd.DataFrame, position: dict,
         position: 妙想持仓接口返回的标准化 dict（含 count/cost_price/profit_pct）
         regime: 市场状态（trending_up/weak_up/sideways/trending_down/chaos）
         hard_intercept: 市场门控硬拦截是否触发
-        sector: 所属板块名称（可为空）
+        sector: 所属板块名称（取不到时为 UNKNOWN_SECTOR）
         sector_pct: 板块当日涨跌幅（None=无法判断，板块类规则跳过）
         entry_date: 买入日期（历史委托推导，可为空）
 
@@ -334,8 +408,11 @@ def fetch_sector_pct_map() -> Dict[str, float]:
 
 
 def match_sector_pct(board_name: str, pct_map: Dict[str, float]) -> Optional[float]:
-    """按名称匹配板块当日涨跌幅；精确匹配失败时做包含匹配。"""
-    if not board_name or not pct_map:
+    """按名称匹配板块当日涨跌幅；精确匹配失败时做包含匹配。
+
+    板块未知或行情缺失时返回 None = 板块类规则判不了（不是"板块没走弱"）。
+    """
+    if not board_name or board_name == UNKNOWN_SECTOR or not pct_map:
         return None
     if board_name in pct_map:
         return pct_map[board_name]

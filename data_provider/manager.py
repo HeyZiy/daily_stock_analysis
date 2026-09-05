@@ -13,6 +13,7 @@ ETF/指数日线不归本模块管，见 bars.py。
 """
 import logging
 import time
+from datetime import date, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
 import pandas as pd
@@ -23,6 +24,25 @@ from .types import DataFetchError, summarize_exception
 from .realtime import merge_realtime_quotes
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp_to_last_trading_day(d: date) -> date:
+    """把日期收敛到 ≤ d 的最近交易日。
+
+    新鲜度检查的目标日期不能直接用调用方传入的 end_date（常为 date.today()）：
+    周末/节假日不是交易日，行情永远不会有当天的 K 线，直接比对会把整条数据源链
+    误判为"数据过期"（如 2026-09-05 周六全池失败）。
+    日历拉取失败时 trading_calendar 按约定返回空列表 → 退化为周一~周五兜底
+    （周末回退到周五，节假日情形宁可放行也不误杀）。
+    """
+    from src.trading_calendar import get_trading_dates
+    trading_days = get_trading_dates(d - timedelta(days=30), d)
+    if trading_days:
+        return trading_days[-1]
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
 
 def get_fetcher():
     """构造 DataFetcherManager 实例（失败返回 None）。供入口层统一调用，避免各模块重复构造。"""
@@ -208,10 +228,12 @@ class DataFetcherManager:
                 )
                 
                 if df is not None and not df.empty:
-                    # 检查数据新鲜度：最新日期必须 >= end_date（或最近交易日）
+                    # 检查数据新鲜度：最新日期必须 >= 请求截止日对应的最近交易日
+                    # （end_date 本身可能是周末/节假日，须先收敛，见 _clamp_to_last_trading_day）
                     try:
                         df_latest = pd.to_datetime(df['date'].max()).date()
                         target_date = pd.to_datetime(end_date).date() if isinstance(end_date, str) else end_date
+                        target_date = _clamp_to_last_trading_day(target_date)
                         # 简单判断：如果数据最新日期 < 目标日期，视为过期
                         if df_latest < target_date:
                             raise DataFetchError(

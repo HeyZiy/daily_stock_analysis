@@ -4,16 +4,22 @@
 趋势交易策略 — 日度分析与信号检测
 ===================================
 
-定位：趋势波段系统。只做主线中的强趋势股，只在分歧回踩时介入。
+定位：趋势波段系统。只做主线中的强趋势股，只在缩量回踩时介入。
 
 职责：
 1. 读取妙想自选股或指定股票列表，直接进行技术分析
 2. 市场环境过滤（调用 market_gate 模块）
-3. 纯技术分析（第一次分歧回踩MA5等规则）
+3. 纯技术分析（缩量回踩MA5等规则）
 4. 观察池维护（趋势破坏自动剔除）
 
+拦截层（自下而上，越靠下越"硬"）：
+- market_gate：市场环境层，硬拦截时不开仓
+- veto_rules：负面清单（9 条硬否决），任一触发即不进信号池、不看评分
+- removal_rules：趋势破坏剔除（连续2天跌破10日线等）
+- signal_detector：买点形态 + 信号质量门（情绪过热等）
+
 核心策略：
-- 买点：主升中的第一次分歧回踩MA5（缩量 + 不破5日线 + 换手率>5%）
+- 买点：主升中的缩量回踩MA5（不破5日线 + 换手率>5%）
 - 不做：加速追高、情绪高潮接力、连续大阳后追涨
 - 卖出：每日读取妙想模拟仓持仓，输出卖出信号（减仓50%/清仓，见 sell_rules）
 - 环境过滤：见 strategy/market.md
@@ -42,13 +48,22 @@ from src.notify.service import NotificationService
 from src.mx.service import MXService
 from src.mx.client import MXMoniClient
 from src.mx.position_utils import filter_stock_positions, get_last_buy_dates_safe
-from src.market_state.market_gate import check_market_gate, fetch_gate_inputs
-from src.trend.analyzer import StockTrendAnalyzer
-from src.trend.removal_rules import check_removal_rules
-from src.trend.sell_rules import (
-    detect_sell_signals, fetch_sector_pct_map, match_sector_pct,
+from src.market_state.market_gate import (
+    check_market_gate, diagnose_regime, fetch_gate_inputs,
 )
-from src.trend.signal_detector import TechnicalSignal, detect_pullback_signals
+from src.trend.analyzer import StockTrendAnalyzer
+from src.trend.removal_rules import (
+    RemovalStats, check_removal_rules, check_removal_rules_detail,
+)
+from src.trend.veto_rules import (
+    ACTION_REMOVE, check_external_veto, check_market_veto,
+)
+from src.trend.sell_rules import (
+    HoldingRow, detect_sell_signals, fetch_sector_pct_map, match_sector_pct,
+)
+from src.trend.signal_detector import (
+    UNKNOWN_SECTOR, TechnicalSignal, detect_pullback_signals,
+)
 from src.trend.report import generate_technical_report
 setup_env()
 
@@ -100,13 +115,16 @@ class SimpleTechnicalAnalyzer:
                 pct_changes[code] = 0.0
         return pct_changes
 
-    def fetch_stock_data(self, code: str, days: int = 40) -> Optional[pd.DataFrame]:
+    def fetch_stock_data(self, code: str, days: int = 95) -> Optional[pd.DataFrame]:
         """
         获取股票历史数据（直接从网络获取）
 
+        天数口径为自然日：95 天约 65 个交易日，满足负面清单 60 日类规则
+        （V2/V7/V8 需 61 根 K 线）与 MA60 的计算需求。
+
         Args:
             code: 股票代码
-            days: 获取天数
+            days: 获取天数（自然日）
 
         Returns:
             DataFrame 或 None
@@ -142,16 +160,27 @@ class SimpleTechnicalAnalyzer:
             return None
 
     def _fetch_stock_sector(self, code: str) -> str:
-        """获取股票所属板块名称，失败返回空串"""
+        """获取股票所属板块名称。
+
+        取不到时降级为「未知板块」并记 warning —— 不返回空串：
+        空串在 Markdown 表格里是空单元格，看起来像列错位，且无法与"确实没板块"区分。
+        """
         try:
             from data_provider.fetchers.efinance_fetcher import EfinanceFetcher
             ef = EfinanceFetcher()
             df = ef.get_belong_board(code)
             if df is not None and not df.empty and "板块名称" in df.columns:
-                return str(df["板块名称"].iloc[0])
-        except Exception:
-            pass
-        return ""
+                sector = str(df["板块名称"].iloc[0]).strip()
+                if sector:
+                    return sector
+            logger.warning(
+                f"⚠️ {code}: 未取到所属板块 → 降级为「{UNKNOWN_SECTOR}」，板块类规则已跳过"
+            )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ {code}: 获取所属板块失败（{e}）→ 降级为「{UNKNOWN_SECTOR}」，板块类规则已跳过"
+            )
+        return UNKNOWN_SECTOR
 
     def screen_new_candidates(self, keyword: str, page_size: int = 30) -> List[Tuple[str, str]]:
         """MX 松筛发现新候选，返回 [(code, name), ...]
@@ -188,9 +217,17 @@ class SimpleTechnicalAnalyzer:
 
     def analyze_all_stocks(self, stock_list: List[Tuple[str, str]], 
                           max_stocks: Optional[int] = None,
-                          sort_by_pct: bool = True) -> Tuple[List[TechnicalSignal], List[Tuple[str, str, str]], List[Tuple[str, str, str]]]:
+                          sort_by_pct: bool = True
+                          ) -> Tuple[List[TechnicalSignal],
+                                     List[Tuple[str, str, str]],
+                                     List[Tuple[str, str, str]],
+                                     List[Tuple[str, str, str, str]],
+                                     RemovalStats]:
         """
-        分析所有关注股票，返回技术信号列表、剔除列表和失败列表
+        分析所有关注股票，返回技术信号列表、剔除列表、失败列表、否决列表与剔除规则统计
+
+        准入顺序：剔除规则（趋势破坏） → 负面清单行情类否决 → 买点信号检测
+                  → 负面清单外部数据类否决（仅信号候选）
 
         Args:
             stock_list: [(code, name), ...]
@@ -198,11 +235,18 @@ class SimpleTechnicalAnalyzer:
             sort_by_pct: 是否按跌幅排序（优先分析跌幅大的股票）
 
         Returns:
-            (技术信号列表, [(code, name, 剔除原因), ...], [(code, name, 失败原因), ...])
+            (技术信号列表,
+             [(code, name, 剔除原因), ...],
+             [(code, name, 失败原因), ...],
+             [(code, name, 否决动作, 否决原因), ...],
+             剔除规则逐条统计 RemovalStats)
+             否决动作为 ACTION_SKIP（仅跳过当日信号）或 ACTION_REMOVE（剔除自选池）
         """
         all_signals = []
         removed_stocks = []
         failed_stocks = []
+        vetoed_stocks = []
+        stats = RemovalStats()
 
         if max_stocks and len(stock_list) > max_stocks:
             if sort_by_pct:
@@ -225,15 +269,34 @@ class SimpleTechnicalAnalyzer:
                     df = df.sort_values('date').reset_index(drop=True)
                     df = self.trend_analyzer._calculate_mas(df)
 
+                # 逐条跑完 4 条规则：既给出剔除结论，也累积「检查 N 只 / 触发 N 只」统计
+                checks = check_removal_rules_detail(code, df)
+                stats.record(f"{name}({code})", checks)
                 should_remove, remove_reason = check_removal_rules(code, df)
                 if should_remove:
                     removed_stocks.append((code, name, remove_reason))
                     logger.info(f"❌ 剔除 {name}({code}): {remove_reason}")
                     continue
 
+                # 负面清单（行情类）：任一规则触发即否决，不进信号池、不看评分
+                market_veto = check_market_veto(code, name, df)
+                if market_veto.vetoed:
+                    vetoed_stocks.append(
+                        (code, name, market_veto.action, '；'.join(market_veto.reasons))
+                    )
+                    continue
+
                 signals = detect_pullback_signals(code, name, df)
 
                 if signals:
+                    # 负面清单（外部数据类）：只对已产出信号的候选惰性调用妙想 API
+                    ext_veto = check_external_veto(code, name, self.mx_service, self.fetcher)
+                    if ext_veto.vetoed:
+                        vetoed_stocks.append(
+                            (code, name, ext_veto.action, '；'.join(ext_veto.reasons))
+                        )
+                        continue
+
                     sector = self._fetch_stock_sector(code)
                     for s in signals:
                         s.sector = sector
@@ -252,9 +315,16 @@ class SimpleTechnicalAnalyzer:
 
         all_signals.sort(key=lambda x: x.score, reverse=True)
 
-        kept_count = len(stock_list) - len(removed_stocks) - len(failed_stocks)
-        logger.info(f"处理完成 | 保留:{kept_count} 剔除:{len(removed_stocks)} 失败:{len(failed_stocks)} 信号:{len(all_signals)}")
-        return all_signals, removed_stocks, failed_stocks
+        veto_removed = sum(1 for v in vetoed_stocks if v[2] == ACTION_REMOVE)
+        kept_count = len(stock_list) - len(removed_stocks) - len(vetoed_stocks) - len(failed_stocks)
+        logger.info(
+            f"处理完成 | 保留:{kept_count} 剔除:{len(removed_stocks)} "
+            f"负面清单否决:{len(vetoed_stocks)}(其中剔除自选池{veto_removed}) "
+            f"失败:{len(failed_stocks)} 信号:{len(all_signals)}"
+        )
+        # 逐条输出剔除规则的检查/触发统计（让"剔除 N 只"可解释、未实现项可见）
+        stats.log_summary()
+        return all_signals, removed_stocks, failed_stocks, vetoed_stocks, stats
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -345,14 +415,14 @@ def _list_self_selected(analyzer: 'SimpleTechnicalAnalyzer') -> int:
 
 
 def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
-                      hard_intercept: bool):
+                      hard_intercept: bool) -> List[HoldingRow]:
     """读取妙想模拟仓股票持仓并检测卖出信号（只出建议，不执行交易）。
 
     仅对股票持仓（代码前缀白名单）输出信号；ETF/基金/债券等非股票持仓
     由 ETF 系统管理，不参与。卖出信号检测见 sell_rules。
 
     Returns:
-        held_rows: [(position, sell_signal 或 None, sector, sector_pct), ...] 股票持仓
+        held_rows: 股票持仓行（一只一行，见 HoldingRow）
     """
     if not os.getenv("MX_APIKEY"):
         logger.warning("未配置 MX_APIKEY，跳过持仓卖出分析")
@@ -369,12 +439,20 @@ def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
     if not sector_pct_map:
         logger.warning("板块行情不可用，板块类卖出规则（板块走弱/主线退潮）跳过")
 
-    held_rows = []
+    held_rows: List[HoldingRow] = []
     for p in positions:
         code = canonical_stock_code(p.get("code", ""))
         name = p.get("name", "") or code
         sector = analyzer._fetch_stock_sector(code)
         sector_pct = match_sector_pct(sector, sector_pct_map)
+        # 板块未知 或 板块行情缺失 → 板块类规则判不了（不是"板块没走弱"），
+        # 需带到报告层显式标注，否则用户会把"无卖出信号"误读为安全。
+        sector_skipped = sector == UNKNOWN_SECTOR or sector_pct is None
+        if sector_skipped:
+            logger.warning(
+                f"⚠️ {name}({code}): 板块信息不可用（板块={sector}，"
+                f"板块行情={'有' if sector_pct is not None else '无'}）→ 板块类卖出规则已跳过"
+            )
 
         sig = None
         df = analyzer.fetch_stock_data(code)
@@ -386,7 +464,10 @@ def _analyze_holdings(analyzer: 'SimpleTechnicalAnalyzer', regime: str,
                 sector=sector, sector_pct=sector_pct,
                 entry_date=entry_map.get(code, ""),
             )
-        held_rows.append((p, sig, sector, sector_pct))
+        held_rows.append(HoldingRow(
+            position=p, signal=sig, sector=sector,
+            sector_pct=sector_pct, sector_skipped=sector_skipped,
+        ))
 
         if sig:
             action_label = "🔴 清仓" if sig.action == "clear" else "🟠 减仓50%"
@@ -492,14 +573,17 @@ def main():
         stock_list = list(zip(stock_codes, [name_mapping.get(c, c) for c in stock_codes]))
         logger.info(f"当前关注列表: {len(stock_list)} 只股票")
 
-        signals, removed_stocks, failed_stocks = analyzer.analyze_all_stocks(stock_list, max_stocks=max_stocks, sort_by_pct=False)
+        signals, removed_stocks, failed_stocks, vetoed_stocks, removal_stats = analyzer.analyze_all_stocks(
+            stock_list, max_stocks=max_stocks, sort_by_pct=False
+        )
 
-        # 3. 从妙想删除剔除的股票（仅当不是命令行指定模式时）
-        if removed_stocks and not args.stocks:
-            removed_codes = [code for code, _, _ in removed_stocks]
-            success = analyzer.mx_service.remove_stocks(removed_codes)
+        # 3. 从妙想删除剔除的股票（趋势破坏 + 负面清单极端过热类；命令行指定模式不删）
+        codes_to_remove = [code for code, _, _ in removed_stocks]
+        codes_to_remove += [c for c, _, action, _ in vetoed_stocks if action == ACTION_REMOVE]
+        if codes_to_remove and not args.stocks:
+            success = analyzer.mx_service.remove_stocks(codes_to_remove)
             if success:
-                logger.info(f"已从妙想删除 {len(removed_codes)} 只自选股")
+                logger.info(f"已从妙想删除 {len(codes_to_remove)} 只自选股")
             else:
                 logger.warning("从妙想删除失败")
         
@@ -507,6 +591,12 @@ def main():
         gate_inputs = fetch_gate_inputs(analyzer.fetcher)
         can_trade, market_conditions, market_summary, market_regime, hard_intercept = check_market_gate(gate_inputs)
         logger.info(market_summary)
+        # 单独取一次诊断明细（均线排列 / 偏离 MA20 / 命中路径）供报告展示。
+        # 不改 check_market_gate 的返回值，避免影响 etf_observe.py 的调用。
+        regime_diag = diagnose_regime(
+            gate_inputs.get("index_df"), sum(1 for v in market_conditions.values() if v)
+        )
+        logger.info(f"市场状态判定明细 → {regime_diag.describe()}")
         if hard_intercept:
             logger.warning("硬拦截触发！当日应清仓所有持仓，不执行任何买入操作")
 
@@ -527,17 +617,18 @@ def main():
             "chaos": "混沌×不开仓",
         }
         regime_note = regime_labels.get(market_regime, "状态不明×0.85")
+        # 经 apply_regime 写入有效评分：漏跑这一步会在渲染层抛异常，
+        # 而不是让 effective_score 静默保持 0 把信号全判成"暂不关注"
         for s in signals:
-            s.effective_score = int(s.score * regime_modifier)
-            s.regime_note = regime_note
+            s.apply_regime(regime_modifier, regime_note)
 
         # 4.5 持仓卖出信号（妙想持仓为事实来源，只出建议，执行由用户主动）
         held_rows = _analyze_holdings(analyzer, market_regime, hard_intercept)
 
         # 已持仓股票抑制买入信号（避免"持有又提示买入"）
         if held_rows:
-            held_codes = {p.get("code", "") for p, _, _, _ in held_rows}
-            filtered = [s for s in signals if s.code not in held_codes]
+            held_codes = {canonical_stock_code(r.code) for r in held_rows}
+            filtered = [s for s in signals if canonical_stock_code(s.code) not in held_codes]
             if len(filtered) != len(signals):
                 logger.info(f"抑制 {len(signals) - len(filtered)} 只持仓股票的买入信号")
             signals = filtered
@@ -545,7 +636,10 @@ def main():
         report = generate_technical_report(signals, removed_stocks,
                                            market_env=(can_trade, market_conditions, market_summary, market_regime),
                                            failed_stocks=failed_stocks,
-                                           sell_rows=held_rows)
+                                           vetoed_stocks=vetoed_stocks,
+                                           sell_rows=held_rows,
+                                           removal_stats=removal_stats,
+                                           regime_diag=regime_diag)
 
         # 5. 保存报告
         _save_report(report)
