@@ -28,10 +28,10 @@
 # =============================================
 
 # ── 趋势跟踪分析：每交易日 15:10 收盘后（买入信号 + 持仓卖出信号，推送结果）──
-10 15 * * 1-5 cd /srv/regime-trader && flock -n /tmp/trend.lock ./.venv/bin/python trend_analysis.py > /dev/null 2>> logs/cron_error.log
+10 15 * * 1-5 cd /root/regime-trader && flock -n /tmp/trend.lock /root/miniconda/envs/rt/bin/python trend_analysis.py > /dev/null 2>> logs/cron_error.log
 
 # ── ETF 周度观察 + 自动调仓：每周一 10:10（开盘后，妙想市价单可成交）──
-10 10 * * 1 cd /srv/regime-trader && flock -n /tmp/etf.lock ./.venv/bin/python etf_observe.py --execute > /dev/null 2>> logs/cron_error.log
+10 10 * * 1 cd /root/regime-trader && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py --execute > /dev/null 2>> logs/cron_error.log
 
 # ── 风格状态周报：每周日 9:00（产出 data/style_state.json 供周一 etf 批次引用）──
-0 9 * * 7 cd /srv/regime-trader && flock -n /tmp/style.lock ./.venv/bin/python style_report.py > /dev/null 2>> logs/cron_error.log
+0 9 * * 7 cd /root/regime-trader && flock -n /tmp/style.lock /root/miniconda/envs/rt/bin/python style_report.py > /dev/null 2>> logs/cron_error.log
