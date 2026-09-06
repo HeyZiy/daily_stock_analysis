@@ -209,11 +209,19 @@ def _compute_allocation():
 
     # 卫星仓 — 行业动量轮动（只出指令，执行统一走 _execute_batch）
     satellite = None
+    state_gate = None
+    try:
+        from src.market_state.style_state import satellite_state_gate
+
+        state_gate = satellite_state_gate()
+    except Exception:
+        logger.warning("风格状态门控获取失败，卫星门控 fail-open 放行", exc_info=True)
     try:
         from src.etf import industry_momentum as sat_mod
 
         satellite = sat_mod.analyze_satellite(positions, total_assets,
-                                              hard_intercept, regime, client=client)
+                                              hard_intercept, regime, client=client,
+                                              state_gate=state_gate)
     except Exception:
         logger.warning("卫星仓分析失败", exc_info=True)
 
@@ -416,6 +424,20 @@ def _satellite_overview(satellite: dict) -> str:
     lines.append(f"预算 10% | 最多 2 只 | 当前卫星持仓市值 {satellite['satellite_mv']:,.0f} 元")
     if satellite["locked"]:
         lines.append("🔒 市场门控硬拦截：卫星仓禁新开仓（已持仓不动，降杠杆门控）")
+    # 风格状态门控（真空/退潮期清仓+禁新开；状态数据缺失/过期时 fail-open 放行）
+    gate = satellite.get("state_gate")
+    if gate and gate.get("state"):
+        from src.market_state.style_state import STATE_LABELS
+
+        gate_label = STATE_LABELS.get(gate["state"], gate["state"])
+        if gate.get("force_flat") or gate.get("block_new"):
+            lines.append(f"🚦 风格状态门控生效：{gate_label} → 卫星仓清仓 + 禁新开"
+                         f"（数据截至 {gate.get('data_date')}）")
+        else:
+            lines.append(f"🚦 风格状态门控：{gate_label} → 放行（数据截至 {gate.get('data_date')}）")
+    elif gate is not None and not gate.get("state"):
+        lines.append("🚦 风格状态门控：状态数据缺失/过期，fail-open 放行"
+                     "（请检查周日 style_report 是否正常产出）")
     lines.append("")
 
     lines.append("### 突破候选（关注池内放量突破）")

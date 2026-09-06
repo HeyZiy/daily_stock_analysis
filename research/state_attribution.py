@@ -144,7 +144,7 @@ def run(start: str) -> str:
         core_weekly.append(ret)
 
     # ── 动量列：行业指数代理 ──
-    industries = fetch_industry_daily()  # {行业名: df(OPEN..CLOSE/AMOUNT/PE...)}
+    industries = fetch_industry_daily()  # {行业名: df(date, close, amount)}
     hs300 = get_index_daily(HS300, days=2500)
     hs300_close = hs300.set_index("date")["close"].astype(float)
     hs300_close.index = hs300_close.index.astype(str)
@@ -152,8 +152,8 @@ def run(start: str) -> str:
     ind_close = pd.DataFrame({name: df.set_index("date")["close"].astype(float)
                               for name, df in industries.items()})
     ind_close.index = ind_close.index.astype(str)
-    ind_amount = pd.DataFrame({name: df.set_index("date")["AMOUNT"].astype(float)
-                               for name, df in industries.items() if "AMOUNT" in df.columns})
+    ind_amount = pd.DataFrame({name: df.set_index("date")["amount"].astype(float)
+                               for name, df in industries.items() if "amount" in df.columns})
     ind_amount.index = ind_amount.index.astype(str)
 
     mom_weekly = []

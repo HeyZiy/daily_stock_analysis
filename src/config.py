@@ -78,6 +78,9 @@ class Config:
     enable_realtime_quote: bool = True
     realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
 
+    # === 卫星仓风格状态门控（真空/退潮期清仓+禁新开，fail-open） ===
+    enable_satellite_state_gate: bool = True
+
     # === 邮件通知 ===
     email_sender: Optional[str] = None
     email_sender_name: str = "daily_stock_analysis股票分析助手"
@@ -115,6 +118,7 @@ class Config:
             mx_apikey=(os.getenv('MX_APIKEY') or os.getenv('MX_API_KEY') or '').strip() or None,
             bias_threshold=max(1.0, float(os.getenv('BIAS_THRESHOLD', '5.0'))),
             enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
+            enable_satellite_state_gate=os.getenv('SATELLITE_STATE_GATE', 'true').lower() == 'true',
             realtime_source_priority=cls._resolve_realtime_source_priority(),
             email_sender=os.getenv('EMAIL_SENDER'),
             email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),

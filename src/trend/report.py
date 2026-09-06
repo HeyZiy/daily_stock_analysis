@@ -7,9 +7,10 @@
 使用模型：T日盘后出信号 → T+1观察开盘/盘中走势 → T+1尾盘决定是否介入。
 """
 
+import json
 import logging
 import string
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.market_state.market_gate import RegimeDiagnosis
@@ -19,6 +20,34 @@ from src.trend.signal_detector import UNKNOWN_SECTOR, TechnicalSignal
 from src.trend.veto_rules import ACTION_REMOVE
 
 logger = logging.getLogger(__name__)
+
+
+def _style_state_display() -> Optional[str]:
+    """读 data/style_state.json 返回风格状态展示文本（元层观察，A 阶段纯展示）。
+
+    fail-soft：文件缺失/结构不符/异常一律返回 None，不阻断日报。
+    """
+    try:
+        from src.market_state.style_state import STATE_FILE, STATE_GATE_MAX_AGE_DAYS, STATE_LABELS
+
+        if not STATE_FILE.exists():
+            return None
+        st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state, data_date = st.get("state"), st.get("data_date")
+        if state not in STATE_LABELS:
+            return None
+        streak = f"，持续第 {st.get('state_streak')} 周" if st.get("state_streak") else ""
+        stale = ""
+        try:
+            age = (date.today() - date.fromisoformat(str(data_date))).days
+            if age > STATE_GATE_MAX_AGE_DAYS:
+                stale = f"，已 {age} 天未更新⚠️"
+        except (TypeError, ValueError):
+            pass
+        return (f"{STATE_LABELS[state]}{streak}"
+                f"（截至 {data_date}{stale}，规则见 strategy/style_state.md）")
+    except Exception:
+        return None
 
 REGIME_DESC = {
     "trending_up":   "📈 趋势上行 — 均线多头排列",
@@ -638,6 +667,10 @@ def generate_technical_report(
             f"> **{env_icon} {'允许开仓' if can_trade else '建议空仓'}**（满足{met}/{total}项条件）",
             "",
         ])
+        # 风格状态（元层观察，与大盘门控不同层：大盘管能不能开仓，风格管什么打法占优）
+        style_line = _style_state_display()
+        if style_line:
+            lines.extend([f"> **风格状态**：{style_line}", ""])
         # 判定明细：排列 + 偏离 MA20 + 命中路径，回答"为什么判成这个状态"
         lines.extend(_format_regime_diagnosis(regime_diag))
 

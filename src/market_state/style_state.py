@@ -105,6 +105,18 @@ ADVICE = {
 
 # ══════════════ 数据获取 ══════════════
 
+def _fetch_sw_hist(code: str, retries: int = 3, delay: float = 2.0) -> pd.DataFrame:
+    """ak.index_hist_sw 带重试：申万官方接口偶发限流返回 HTML（JSONDecodeError），稍候重试即可恢复。"""
+    import akshare as ak
+
+    for attempt in range(1, retries + 1):
+        try:
+            return ak.index_hist_sw(symbol=code, period="day")
+        except Exception:
+            if attempt == retries:
+                raise
+            time.sleep(delay * attempt)
+
 def fetch_index_daily() -> Dict[str, pd.DataFrame]:
     """宽基指数日线（统一走 data_provider.bars.get_index_daily，含 399 东财/新浪备援）。失败的跳过。
 
@@ -145,7 +157,7 @@ def fetch_industry_daily() -> Dict[str, pd.DataFrame]:
         code = str(row["行业代码"]).replace(".SI", "")
         name = str(row["行业名称"])
         try:
-            df = ak.index_hist_sw(symbol=code, period="day")
+            df = _fetch_sw_hist(code)
             if df is not None and len(df) > MOM_LONG + 10:
                 df = df.rename(columns={"日期": "date", "收盘": "close", "成交额": "amount"})
                 df["date"] = pd.to_datetime(df["date"])
@@ -393,6 +405,54 @@ def save_state(state: dict):
         STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning(f"风格状态文件写入失败: {e}")
+
+
+# ══════════════ 卫星仓风格状态门控 ══════════════
+
+STATE_GATE_MAX_AGE_DAYS = 10   # 状态数据日距今日超过此值视为过期，fail-open
+
+
+def satellite_state_gate() -> dict:
+    """风格状态 → 卫星仓预算门控：真空/退潮期强制清仓+禁新开，强势/形成期放行。
+
+    归因依据（research/budget_gate_sim.py，2021 起周度回放）：无条件持有动量
+    年化超额约 -1.5%；真空/退潮期立即清仓约 +11.0%，且持仓切换次数更低；
+    只禁新开不清仓无效（亏损来自存量持仓在 off 期流血）。
+
+    fail-open（元层出错不锁死系统）：开关关闭、状态文件缺失/解析失败、
+    数据过期（data_date 距今 > STATE_GATE_MAX_AGE_DAYS 天）→ 全放行 + WARNING
+    （warning 走告警推送，提示 style_report 周日任务可能未产出）。
+
+    Returns: {"block_new": bool, "force_flat": bool, "state": str, "data_date": str}
+    """
+    from src.config import get_config
+
+    base = {"block_new": False, "force_flat": False, "state": None, "data_date": None}
+    try:
+        if not get_config().enable_satellite_state_gate:
+            return base
+    except Exception:
+        return base
+
+    st = load_state()
+    state, data_date = st.get("state"), st.get("data_date")
+    base["state"], base["data_date"] = state, data_date
+
+    age = None
+    if data_date:
+        try:
+            age = (date.today() - date.fromisoformat(str(data_date))).days
+        except ValueError:
+            age = None
+    if state not in STATE_LABELS or age is None or age > STATE_GATE_MAX_AGE_DAYS:
+        logger.warning(
+            f"风格状态缺失或过期(state={state}, data_date={data_date})，卫星门控 fail-open 放行"
+        )
+        return base
+
+    off = state in (S_VACUUM, S_FADING)
+    base["block_new"] = base["force_flat"] = off
+    return base
 
 
 def update_state(snap: dict, state: str, streaks: dict, prev: dict) -> dict:

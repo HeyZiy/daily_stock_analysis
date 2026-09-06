@@ -93,11 +93,27 @@ def _load_rank_history() -> List[dict]:
     return []
 
 
-def _append_rank_history(top5: List[str]):
+def _latest_data_date(results: List[dict]) -> str:
+    """本次截面对应的行情日期：取任一结果日线索引的最后一值，失败兜底当天。"""
+    for r in results:
+        df = r.get("df")
+        if df is not None and len(df) > 0:
+            try:
+                dt = pd.to_datetime(df.index[-1])
+                # 注入式 df 可能是 RangeIndex，解析出的 1970 等非法日期跳过
+                if pd.Timestamp("1990-01-01") <= dt <= pd.Timestamp.now() + pd.Timedelta(days=7):
+                    return dt.strftime("%Y-%m-%d")
+            except Exception:
+                continue
+    from datetime import date
+    return date.today().strftime("%Y-%m-%d")
+
+
+def _append_rank_history(top5: List[str], data_date: str):
     """追加本周 top5 记录（etf_observe 周度批次调用，诊断工具不写）。"""
     try:
         hist = _load_rank_history()
-        hist.append({"top5": top5})
+        hist.append({"date": data_date, "top5": top5})
         RANK_HISTORY_PATH.write_text(
             json.dumps(hist[-RANK_HISTORY_MAX:], ensure_ascii=False, indent=1),
             encoding="utf-8")
@@ -395,7 +411,7 @@ def analyze_universe(update_rank_history: bool = False) -> List[dict]:
     if update_rank_history:
         top5 = [r["industry"] or r["name"] for r in results
                 if r["momentum_rank"] and r["momentum_rank"] <= RANK_EXIT_WINDOW]
-        _append_rank_history(top5)
+        _append_rank_history(top5, _latest_data_date(results))
     return results
 
 
@@ -427,13 +443,16 @@ def _pe_pct_for(res: dict) -> Optional[float]:
 
 
 def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dict[str, str],
-                      hard_intercept: bool) -> Tuple[List[dict], List[str]]:
+                      hard_intercept: bool, force_flat: bool = False) -> Tuple[List[dict], List[str]]:
     """生成卫星卖出订单（动量退出规则，持仓起点全部来自模拟仓数据）。
 
     降杠杆门控：硬拦截只禁新开仓，不强制清仓（截面轮动弱市里也有相对强行业，
     与个股趋势子策略的全量门控差异，见 overview.md）。
-    退出优先级：PE 锁仓 > 拥挤度熔断 > 灾难止损 > 相对强度转负 > 技术破位
-    > 连续 2 次跌出前 5。
+    风格状态门控：force_flat（真空/退潮期）为最高优先，直接清仓全部卫星持仓，
+    覆盖所有常规退出规则——归因显示 off 期亏损来自存量持仓流血，等常规规则
+    退出太慢（见 strategy/style_state.md 卫星仓门控节）。
+    退出优先级：风格状态门控 > PE 锁仓 > 拥挤度熔断 > 灾难止损 > 相对强度转负
+    > 技术破位 > 连续 2 次跌出前 5。
 
     entry_map 保留参数位（历史签名兼容，当前退出规则不再使用买入日期）。
     """
@@ -444,6 +463,19 @@ def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dic
 
     orders: List[RotationOrder] = []
     reasons: List[str] = []
+
+    if force_flat:
+        for p in filter_held_positions(positions):
+            code = p.get("code", "")
+            if code not in universe_codes:
+                continue
+            name = p.get("name", "") or code
+            count = int(p.get("count", 0) or 0)
+            price = float(p.get("current_price", 0) or 0)
+            reason = "风格状态门控（真空/退潮期）清仓"
+            orders.append(_sell_order(code, name, count, price, reason))
+            reasons.append(f"{name}({code}) {reason}")
+        return orders, reasons
 
     for p in filter_held_positions(positions):
         code = p.get("code", "")
@@ -500,13 +532,14 @@ def build_sell_orders(results: List[dict], positions: List[dict], entry_map: Dic
 
 def build_buy_orders(results: List[dict], held_codes: set, total_assets: float,
                      satellite_mv: float, hard_intercept: bool,
-                     regime: str) -> Tuple[List[dict], List[str]]:
+                     regime: str, block_new: bool = False) -> Tuple[List[dict], List[str]]:
     """生成卫星买入订单（关注池 ∩ 放量突破 ∩ 环境许可，拥挤度 ≥80% 分位减半仓）。
 
     环境许可 = 非硬拦截 + regime 为 trending_up / weak_up（硬拦截为禁买，
-    不清仓）；估值过滤用候选 ETF 自身行业 PE 分位 < 90%，不用全市场 PE。
+    不清仓）；风格状态门控 block_new（真空/退潮期）同样禁新开。
+    估值过滤用候选 ETF 自身行业 PE 分位 < 90%，不用全市场 PE。
     """
-    if hard_intercept:
+    if hard_intercept or block_new:
         return [], []
     if regime not in ("trending_up", "weak_up"):
         return [], []
@@ -564,7 +597,7 @@ def build_buy_orders(results: List[dict], held_codes: set, total_assets: float,
 
 def analyze_satellite(positions: List[dict], total_assets: float,
                       hard_intercept: bool, regime: str,
-                      client=None) -> dict:
+                      client=None, state_gate: Optional[dict] = None) -> dict:
     """卫星仓全流程：排名 → 卖出 → 买入。不执行交易，只出指令。
 
     持仓成本用模拟仓 cost_price（无本地状态文件）；"连续 2 次跌出前 5"
@@ -574,7 +607,9 @@ def analyze_satellite(positions: List[dict], total_assets: float,
     核心仓标的（如 516560 养老ETF）不纳入卫星买卖与市值统计。
 
     PE 口径：逐只行业 PE（≥90% 锁仓/禁买），全市场 PE 不参与卫星决策。
-    locked 仅反映硬拦截（禁买不强制清仓，降杠杆门控）。
+    locked 仅反映硬拦截（禁买不强制清仓，降杠杆门控）；state_gate 为风格
+    状态门控（style_state.satellite_state_gate 输出）：真空/退潮期 force_flat
+    强制清仓 + block_new 禁新开，优先级高于硬拦截；None 时门控不启用。
     """
     results = analyze_universe(update_rank_history=True)
     for r in results:
@@ -585,7 +620,12 @@ def analyze_satellite(positions: List[dict], total_assets: float,
     sat_codes = get_rotation_universe_codes()
     results = [r for r in results if r["code"] in sat_codes]
 
-    sells, sell_notes = build_sell_orders(results, positions, {}, hard_intercept)
+    gate = state_gate or {}
+    force_flat = bool(gate.get("force_flat"))
+    block_new = bool(gate.get("block_new"))
+
+    sells, sell_notes = build_sell_orders(results, positions, {}, hard_intercept,
+                                          force_flat=force_flat)
 
     universe_codes = {r["code"] for r in results}
     satellite_mv = sum(float(p.get("market_value", 0) or 0)
@@ -594,7 +634,7 @@ def analyze_satellite(positions: List[dict], total_assets: float,
                   if p.get("code", "") in universe_codes and int(p.get("count", 0) or 0) > 0}
 
     buys, buy_notes = build_buy_orders(results, held_codes, total_assets, satellite_mv,
-                                       hard_intercept, regime)
+                                       hard_intercept, regime, block_new=block_new)
 
     # 动量排名（选行业层结果，周报观察章节与调仓共用）
     ranked = sorted([r for r in results if r["momentum_score"] > 0],
@@ -610,4 +650,5 @@ def analyze_satellite(positions: List[dict], total_assets: float,
         "satellite_mv": satellite_mv,
         "held_codes": held_codes,
         "locked": hard_intercept,
+        "state_gate": state_gate,
     }
